@@ -1,9 +1,49 @@
-
 <?xml version="1.0" encoding="UTF-8"?>
+<templates id="pos_hdm_fiscal_templates" xml:space="preserve">
+  <!-- Extend the Order receipt (OWL) -->
+  <t t-name="pos_hdm_fiscal.hdm_receipt_ext"
+     t-inherit="point_of_sale.OrderReceipt"
+     t-inherit-mode="extension"
+     owl="1">
+
+    <!-- Insert your custom HTML somewhere guaranteed to exist -->
+    <xpath expr="//div[hasclass('pos-receipt')]" position="inside">
+      <!-- If your JS sets data.hdm_fiscal (string/HTML), render it -->
+      <t t-if="props.data.hdm_fiscal">
+        <div class="hdm-fiscal" t-raw="props.data.hdm_fiscal"/>
+      </t>
+      <t t-else="">
+        <h1>N/A</h1>
+      </t>
+    </xpath>
+
+    <!-- Example: to put it under the header contact block instead -->
+    <!--
+    <xpath expr=\"//div[hasclass('pos-receipt-contact')]\" position=\"inside\">
+      <t t-if=\"props.data.hdm_fiscal\">
+        <div class=\"hdm-fiscal\" t-raw=\"props.data.hdm_fiscal\"/>
+      </t>
+    </xpath>
+    -->
+  </t>
+</templates>
+
+
+<!-- <div class="hdm-fiscal" t-if="receipt &amp;&amp; receipt.hdm_fiscal">
+        <div><strong>Fiscal No:</strong> <t t-esc="receipt.hdm_fiscal.fiscal_number"/></div>
+        <div><strong>Verification:</strong> <t t-esc="receipt.hdm_fiscal.verification_number"/></div>
+        <div><strong>RN/CRN:</strong> <t t-esc="receipt.hdm_fiscal.crn"/></div>
+        <div><strong>Receipt Seq:</strong> <t t-esc="receipt.hdm_fiscal.rseq"/></div>
+        <div t-if="receipt.hdm_fiscal.qr">
+          <img t-att-src="'data:image/png;base64,' + receipt.hdm_fiscal.qr" style="width:160px"/>
+        </div>
+      </div> -->
+
+<!-- <?xml version="1.0" encoding="UTF-8"?>
 <templates id="template" xml:space="preserve">
   <t t-extend="OrderReceipt">
     <t t-jquery="div.receipt-main" t-operation="append">
-      <div class="hdm-fiscal" t-if="receipt && receipt.hdm_fiscal">
+      <div class="hdm-fiscal" t-if="receipt &amp;&amp; receipt.hdm_fiscal">
         <div><strong>Fiscal No:</strong> <t t-esc="receipt.hdm_fiscal.fiscal_number"/></div>
         <div><strong>Verification:</strong> <t t-esc="receipt.hdm_fiscal.verification_number"/></div>
         <div><strong>RN/CRN:</strong> <t t-esc="receipt.hdm_fiscal.crn"/></div>
@@ -14,4 +54,4 @@
       </div>
     </t>
   </t>
-</templates>
+</templates> -->

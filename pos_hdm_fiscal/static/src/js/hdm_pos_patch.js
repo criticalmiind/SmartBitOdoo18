@@ -1,67 +1,56 @@
+/** @odoo-module **/
+import { _t } from "@web/core/l10n/translation";
+import { patch } from "@web/core/utils/patch";
+import { PaymentScreen } from "@point_of_sale/app/screens/payment_screen/payment_screen";
+import { AlertDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
+import { PosOrder } from "@point_of_sale/app/models/pos_order"; // Odoo 18 path
 
-odoo.define('pos_hdm_fiscal.hdm_pos_patch', function (require) {
-  'use strict';
-
-  const Registries = require('point_of_sale.Registries');
-  const PaymentScreen = require('point_of_sale.PaymentScreen');
-
-  const HDMPatchedPaymentScreen = (PaymentScreen) => class extends PaymentScreen {
-    async _finalizeValidation() {
-      const config = this.env.pos.config || {};
-      if (!config.hdm_enabled) {
-        return super._finalizeValidation();
-      }
-
-      try {
-        const order = this.env.pos.get_order();
-        const payload = order.export_as_JSON();
-        const result = await this.rpc({
-          model: 'pos.order',
-          method: 'hdm_print_receipt',
-          args: [[], config.id, payload],
-        });
-        if (result && !config.hdm_print_locally) {
-          order.hdm_fiscal = result;
-        }
-      } catch (err) {
-        this.showPopup('ErrorPopup', {
-          title: this.env._t('HDM Fiscalization Failed'),
-          body: (err && err.message) || this.env._t('Unable to fiscalize receipt. Please try again.'),
-        });
-        return;
-      }
-      await super._finalizeValidation();
-    }
-  };
-
-  Registries.Component.extend(PaymentScreen, HDMPatchedPaymentScreen);
-
-  // Also extend Order to include hdm_fiscal in exported JSON so server can
-  // persist it and rehydrate it when loading orders.
-  const models = require('point_of_sale.models');
-  const Order = models.Order;
-
-  const PatchOrder = (Order) => class extends Order {
-    constructor() {
-      super(...arguments);
-      this.hdm_fiscal = this.hdm_fiscal || null;
+patch(PaymentScreen.prototype, {
+  // https://github.com/odoo/odoo/blob/18.0/addons/point_of_sale/static/src/app/screens/payment_screen/payment_screen.js#L291
+  async _finalizeValidation() {
+    console.log("_finalizeValidation this", this);
+    console.log("_finalizeValidation this.pos", this.pos);
+    console.log("_finalizeValidation this.env.pos", this.env.pos);
+    
+    const config = this.pos.config || {};
+    // const config = this.currentOrder.config || {};
+    if (!config.hdm_enabled) {
+      return super._finalizeValidation(...arguments);
     }
 
-    export_as_JSON() {
-      const json = super.export_as_JSON(...arguments);
-      if (this.hdm_fiscal) {
-        json.hdm_fiscal = this.hdm_fiscal;
+    try {
+      const orm = this.env.services.orm;     // ← correct service in v18
+      const order = this.pos.get_order();
+      const payload = order.serialize({ orm: true });
+      const result = await orm.call(
+        "pos.order",
+        "hdm_print_receipt",
+        [config.id, payload],
+        { context: this.pos?.context || {} }
+      );
+      if (result && !config.hdm_print_locally) {
+        order.hdm_fiscal = result;
       }
-      return json;
+    } catch (err) {
+      this.dialog.add(AlertDialog, {
+        title: _t("HDM Fiscalization Failed"),
+        body: _t("Unable to fiscalize receipt. Please try again."),
+      });
+      return super._finalizeValidation(...arguments);
     }
+    await super._finalizeValidation(...arguments);
+  }
+});
 
-    init_from_JSON(json) {
-      super.init_from_JSON(...arguments);
-      if (json.hdm_fiscal) {
-        this.hdm_fiscal = json.hdm_fiscal;
-      }
-    }
-  };
-  Registries.Model.extend(Order, PatchOrder);
 
+patch(PosOrder.prototype, {
+  init_from_JSON(json) {
+    super.init_from_JSON(...arguments);
+    this.hdm_fiscal = json?.hdm_fiscal || null;  // restore on reload
+  },
+  export_for_printing() {
+    const data = super.export_for_printing(...arguments);
+    if (this.hdm_fiscal) data.hdm_fiscal = this.hdm_fiscal; // for receipt
+    return data;
+  },
 });
