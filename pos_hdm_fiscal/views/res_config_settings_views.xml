@@ -1,0 +1,48 @@
+
+<odoo>
+  <record id="res_config_settings_view_form" model="ir.ui.view">
+    <field name="name">res.config.settings.view.form.pos.hdm</field>
+    <field name="model">res.config.settings</field>
+    <field name="inherit_id" ref="point_of_sale.res_config_settings_view_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//app[@name='point_of_sale']" position="inside">
+        <div class="app_settings_block" data-key="pos_hdm_fiscal">
+          <h2>HDM Fiscal Register</h2>
+          <div class="row mt16 o_settings_container">
+            <div class="col-12 col-lg-6 o_setting_box">
+              <div class="o_setting_left_pane">
+              </div>
+              <div class="o_setting_right_pane">
+                <label for="pos_config_id"/>
+                <field name="pos_config_id"/>
+                <div class="text-muted">Select the POS to configure.</div>
+              </div>
+            </div>
+            <div class="col-12 col-lg-6 o_setting_box">
+              <div class="o_setting_left_pane">
+                <field name="hdm_enabled"/>
+              </div>
+              <div class="o_setting_right_pane">
+                <label for="hdm_enabled"/>
+                <div class="text-muted">Enable Armenian HDM fiscal register for this POS.</div>
+                <!-- <div class="content-group" invisible="not hdm_enabled"> -->
+                  <group>
+                    <field name="hdm_simulate"/>
+                    <field name="hdm_ip"/>
+                    <field name="hdm_port"/>
+                    <field name="hdm_password" password="True"/>
+                    <field name="hdm_cashier_id"/>
+                    <field name="hdm_cashier_pin" password="True"/>
+                    <field name="hdm_print_locally"/>
+                    <button string="Test Connection" name="action_hdm_test_connection" type="object" class="oe_highlight"/>
+                    <button string="Clear Session" name="action_hdm_clear_session" type="object"/>
+                  </group>
+                <!-- </div> -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </xpath>
+    </field>
+  </record>
+</odoo>

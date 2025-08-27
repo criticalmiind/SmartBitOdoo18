@@ -1,0 +1,19 @@
+
+<odoo>
+  <data>
+    <record id="asset_pos_hdm_fiscal" model="ir.asset">
+      <field name="name">POS HDM Fiscal Assets</field>
+      <field name="bundle">point_of_sale.assets</field>
+      <field name="active">True</field>
+      <field name="directive">append</field>
+      <field name="path">/pos_hdm_fiscal/static/src/js/hdm_pos_patch.js</field>
+    </record>
+    <record id="asset_pos_hdm_receipt_qweb" model="ir.asset">
+      <field name="name">POS HDM Receipt QWeb</field>
+      <field name="bundle">web.assets_qweb</field>
+      <field name="active">True</field>
+      <field name="directive">append</field>
+      <field name="path">/pos_hdm_fiscal/static/src/xml/hdm_receipt.xml</field>
+    </record>
+  </data>
+</odoo>

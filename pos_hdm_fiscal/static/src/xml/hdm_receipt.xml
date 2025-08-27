@@ -1,0 +1,17 @@
+
+<?xml version="1.0" encoding="UTF-8"?>
+<templates id="template" xml:space="preserve">
+  <t t-extend="OrderReceipt">
+    <t t-jquery="div.receipt-main" t-operation="append">
+      <div class="hdm-fiscal" t-if="receipt && receipt.hdm_fiscal">
+        <div><strong>Fiscal No:</strong> <t t-esc="receipt.hdm_fiscal.fiscal_number"/></div>
+        <div><strong>Verification:</strong> <t t-esc="receipt.hdm_fiscal.verification_number"/></div>
+        <div><strong>RN/CRN:</strong> <t t-esc="receipt.hdm_fiscal.crn"/></div>
+        <div><strong>Receipt Seq:</strong> <t t-esc="receipt.hdm_fiscal.rseq"/></div>
+        <div t-if="receipt.hdm_fiscal.qr">
+          <img t-att-src="'data:image/png;base64,' + receipt.hdm_fiscal.qr" style="width:160px"/>
+        </div>
+      </div>
+    </t>
+  </t>
+</templates>
