@@ -1,5 +1,24 @@
 
 <odoo>
+  <record id="view_pos_pos_form" model="ir.ui.view">
+    <field name="name">pos.order.view.form.pos.hdm</field>
+    <field name="model">pos.order</field>
+    <field name="inherit_id" ref="point_of_sale.view_pos_pos_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//notebook" position="inside">
+        <page string="HDM" name="hdm">
+          <group>
+            <field name="hdm_fiscal_number" readonly="1"/>
+            <field name="hdm_rseq" readonly="1"/>
+            <field name="hdm_verification_number" readonly="1"/>
+            <field name="hdm_qr_code" readonly="1"/>
+            <field name="hdm_crn" readonly="1"/>
+          </group>
+        </page>
+      </xpath>
+    </field>
+  </record>
+
   <record id="res_config_settings_view_form" model="ir.ui.view">
     <field name="name">res.config.settings.view.form.pos.hdm</field>
     <field name="model">res.config.settings</field>
