@@ -22,7 +22,6 @@ class PosConfig(models.Model):
         help='If disabled, Odoo prints the receipt including HDM fiscal fields returned by the device.')
 
     # Departments fetched from device, and the selected department for service
-    # hdm_departments = fields.One2many('pos.hdm.department', 'pos_config_id', string='HDM Departments')
     hdm_department_id = fields.Many2one(
         'pos.hdm.department',
         string='HDM Department',
@@ -30,9 +29,6 @@ class PosConfig(models.Model):
         ondelete='set null',
         help='Department to send to HDM when printing receipts. Fetched from device on Test Connection.'
     )
-    # Function code for operators/departments listing
-    hdm_fc_get_ops_deps = fields.Integer(string='HDM FC Get Operators/Departments', default=1,
-        help='Native protocol function code for fetching operators/departments (default 1).')
 
     # Diagnostics / last test results
     hdm_last_test_ok = fields.Boolean(string='HDM Last Test OK', readonly=True)
