@@ -35,13 +35,17 @@ class PosOrder(models.Model):
             resp = client.print_receipt(config, order_payload)
             if not resp.get('ok'):
                 raise UserError(resp.get('message', _('Device returned an error.')))
-            return {
-                'fiscal_number': resp.get('fiscal_number'),
-                'verification_number': resp.get('verification_number'),
-                'rseq': resp.get('rseq'),
-                'crn': resp.get('crn'),
-                'qr': resp.get('qr_base64'),
-            }
+            # Only return structured fiscal data if present; otherwise the
+            # device likely acknowledged without a payload (physical print).
+            if resp.get('fiscal_number') or resp.get('qr_base64') or resp.get('verification_number'):
+                return {
+                    'fiscal_number': resp.get('fiscal_number'),
+                    'verification_number': resp.get('verification_number'),
+                    'rseq': resp.get('rseq'),
+                    'crn': resp.get('crn'),
+                    'qr': resp.get('qr_base64'),
+                }
+            return False
 
     @api.model
     def hdm_print_return_receipt(self, pos_config_id, original_order_id, return_payload):
@@ -60,13 +64,15 @@ class PosOrder(models.Model):
             resp = client.print_return_receipt(config, original, return_payload)
             if not resp.get('ok'):
                 raise UserError(resp.get('message', _('Device returned an error.')))
-            return {
-                'fiscal_number': resp.get('fiscal_number'),
-                'verification_number': resp.get('verification_number'),
-                'rseq': resp.get('rseq'),
-                'crn': resp.get('crn'),
-                'qr': resp.get('qr_base64'),
-            }
+            if resp.get('fiscal_number') or resp.get('qr_base64') or resp.get('verification_number'):
+                return {
+                    'fiscal_number': resp.get('fiscal_number'),
+                    'verification_number': resp.get('verification_number'),
+                    'rseq': resp.get('rseq'),
+                    'crn': resp.get('crn'),
+                    'qr': resp.get('qr_base64'),
+                }
+            return False
 
     @api.model
     def hdm_cash_in_out(self, pos_config_id, amount, is_cashin, description=None):

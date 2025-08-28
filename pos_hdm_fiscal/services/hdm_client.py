@@ -126,29 +126,38 @@ class HDMClient:
                 if nl != -1:
                     raw = raw[:nl]
 
+                # Try to decode as UTF-8 JSON first
                 try:
                     text = raw.decode('utf-8')
                 except UnicodeDecodeError:
+                    # Fall back to latin-1 to extract any JSON substring
                     text = raw.decode('latin-1', errors='ignore')
 
                 text_stripped = text.strip()
-                if not text_stripped:
-                    raise Exception("Empty/whitespace response from HDM device")
+                if text_stripped:
+                    try:
+                        return json.loads(text_stripped)
+                    except json.JSONDecodeError:
+                        start_idx = text_stripped.find('{')
+                        end_idx = text_stripped.rfind('}')
+                        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                            candidate = text_stripped[start_idx:end_idx + 1]
+                            try:
+                                return json.loads(candidate)
+                            except Exception:
+                                pass
 
-                try:
-                    return json.loads(text_stripped)
-                except json.JSONDecodeError:
-                    start_idx = text_stripped.find('{')
-                    end_idx = text_stripped.rfind('}')
-                    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                        candidate = text_stripped[start_idx:end_idx + 1]
-                        try:
-                            return json.loads(candidate)
-                        except Exception:
-                            pass
-                    preview = text_stripped[:200]
-                    _logger.error("Invalid response from HDM device: %s", preview)
-                    raise Exception(f"Invalid response from HDM device: {preview}")
+                # Some devices respond with binary ACK-only frames (e.g. containing 0x06)
+                # to indicate success without a JSON payload. Treat those as ok for
+                # operations that don't require a structured response.
+                op = (payload or {}).get('op')
+                if b"\x06" in raw or (len(raw) <= 12 and any(b for b in raw)):
+                    if op in ('login', 'ping', 'cash_in_out', 'print_receipt', 'print_return_receipt'):
+                        return {'ok': True, 'ack': True}
+
+                preview = text_stripped[:200] if text_stripped else raw[:32].hex()
+                _logger.error("Invalid response from HDM device: %s", preview)
+                raise Exception(f"Invalid response from HDM device: {preview}")
             finally:
                 try:
                     s.close()
