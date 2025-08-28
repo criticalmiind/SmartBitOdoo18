@@ -46,11 +46,23 @@ def build_request(password: str, seq=1) -> bytes:
 
     return header + enc_data
 
+# def parse_response(resp: bytes, password: str):
+#     """Decrypt and parse JSON from HDM response."""
+#     # Skip HDM response header (first 10 bytes after protocol info)
+#     # Header format documented in section 4.4.2
+#     enc_data = resp[10:]
+
+#     key = get_first_key(password)
+#     cipher = DES3.new(key, DES3.MODE_ECB)
+#     data = unpad(cipher.decrypt(enc_data), 8)
+
+#     return json.loads(data.decode("utf-8"))
 def parse_response(resp: bytes, password: str):
     """Decrypt and parse JSON from HDM response."""
-    # Skip HDM response header (first 10 bytes after protocol info)
-    # Header format documented in section 4.4.2
-    enc_data = resp[10:]
+
+    # Parse header (first 10 bytes fixed, encrypted payload length at bytes 9-10)
+    resp_len = int.from_bytes(resp[8:10], "big")
+    enc_data = resp[10:10 + resp_len]
 
     key = get_first_key(password)
     cipher = DES3.new(key, DES3.MODE_ECB)
@@ -64,10 +76,22 @@ def get_departments():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HDM_IP, HDM_PORT))
         s.sendall(req)
-        resp = s.recv(8192)  # receive up to 8KB
+
+        # First read header to know how many bytes to expect
+        header = s.recv(10)
+        if len(header) < 10:
+            raise RuntimeError("Incomplete response header")
+
+        resp_len = int.from_bytes(header[8:10], "big")
+        body = b""
+        while len(body) < resp_len:
+            body += s.recv(resp_len - len(body))
+
+        resp = header + body
 
     result = parse_response(resp, HDM_PASSWORD)
-    return result.get("d", [])  # departments list
+    return result.get("d", [])
+
 
 if __name__ == "__main__":
     deps = get_departments()
