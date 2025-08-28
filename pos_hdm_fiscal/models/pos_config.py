@@ -18,27 +18,14 @@ class PosConfig(models.Model):
     hdm_password = fields.Char(string='HDM Password')
     hdm_cashier_id = fields.Char(string='HDM Cashier ID')
     hdm_cashier_pin = fields.Char(string='HDM Cashier PIN')
-    hdm_department_id = fields.Char(string='HDM Department ID',
-        help='Deprecated: will be replaced by device-fetched departments on Test Connection.')
     hdm_print_locally = fields.Boolean(string='HDM Prints Physical Receipt', default=True,
         help='If disabled, Odoo prints the receipt including HDM fiscal fields returned by the device.')
 
-    # Optional: semantic department type (for devices that use a code)
-    hdm_department = fields.Selection(
-        [
-            ('vat', 'VAT Department'),
-            ('non_vat', 'Non‑VAT Department'),
-        ],
-        string='HDM Department',
-        default='vat',
-        help='Department code sent to HDM for receipts; determines VAT handling on the device.'
-    )
-
-    # Departments fetched from device and a default selection
+    # Departments fetched from device, and the selected department for service
     hdm_departments = fields.One2many('pos.hdm.department', 'pos_config_id', string='HDM Departments')
-    hdm_department_ref = fields.Many2one('pos.hdm.department', string='Default Department',
+    hdm_department_id = fields.Many2one('pos.hdm.department', string='HDM Department',
         domain="[('pos_config_id', '=', id)]",
-        help='Department to use for simple receipts. Set after running Test Connection to fetch from device.')
+        help='Department to send to HDM when printing receipts. Fetched from device on Test Connection.')
     # Function code for operators/departments listing
     hdm_fc_get_ops_deps = fields.Integer(string='HDM FC Get Operators/Departments', default=1,
         help='Native protocol function code for fetching operators/departments (default 1).')
@@ -77,23 +64,31 @@ class PosConfig(models.Model):
             # Fetch operators and departments from device, then replace local list
             try:
                 deps = client.get_ops_deps(self)
-                # deps expected: {'operators': [...], 'departments': [{'id':..,'name':..,'type':..}, ...]}
                 dep_list = deps.get('departments') or []
                 # Remove existing
                 self.env['pos.hdm.department'].search([('pos_config_id', '=', self.id)]).unlink()
                 # Create new ones
-                vals_list = [{
-                    'pos_config_id': self.id,
-                    'dept_id': int(d.get('id')) if str(d.get('id') or '').isdigit() else 0,
-                    'name': d.get('name') or '',
-                    'type': int(d.get('type')) if str(d.get('type') or '').isdigit() else 0,
-                } for d in dep_list]
-                # Filter invalid ids
-                vals_list = [v for v in vals_list if v['dept_id']]
+                vals_list = []
+                for d in dep_list:
+                    did = d.get('id')
+                    typ = d.get('type')
+                    if isinstance(did, str) and did.isdigit():
+                        did = int(did)
+                    if isinstance(typ, str) and typ.isdigit():
+                        typ = int(typ)
+                    if isinstance(did, int) and did > 0:
+                        vals_list.append({
+                            'pos_config_id': self.id,
+                            'dept_id': did,
+                            'name': d.get('name') or '',
+                            'type': typ or 0,
+                        })
                 if vals_list:
-                    self.env['pos.hdm.department'].create(vals_list)
+                    created = self.env['pos.hdm.department'].create(vals_list)
+                    # Auto-select if only one
+                    if len(created) == 1:
+                        self.hdm_department_id = created.id
             except Exception as dep_e:
-                # Keep test as success but include error in message for transparency
                 _logger.warning('HDM department fetch failed: %s', dep_e)
         except Exception as e:
             # Persist failure details

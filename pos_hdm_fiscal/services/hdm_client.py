@@ -287,13 +287,12 @@ class HDMClient:
 
     def print_receipt(self, config, order_payload):
         key = _derive_2key_3des(config.hdm_password or '')
-        # Determine department id from fetched list or legacy field
+        # Determine department id from selected Many2one, or fallback to the
+        # single fetched department if only one exists
         dept_id = None
         try:
-            if getattr(config, 'hdm_department_ref', False) and config.hdm_department_ref.dept_id:
-                dept_id = int(config.hdm_department_ref.dept_id)
-            elif getattr(config, 'hdm_department_id', None) and str(config.hdm_department_id).isdigit():
-                dept_id = int(config.hdm_department_id)
+            if getattr(config, 'hdm_department_id', False) and getattr(config.hdm_department_id, 'dept_id', False):
+                dept_id = int(config.hdm_department_id.dept_id)
             elif getattr(config, 'hdm_departments', None) and len(config.hdm_departments) == 1:
                 dept_id = int(config.hdm_departments[0].dept_id)
         except Exception:
