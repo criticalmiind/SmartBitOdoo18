@@ -438,9 +438,9 @@ class HDMClient:
                     'crn': details.get('crn'),
                     'qr_base64': b64encode(qr_txt.encode('utf-8')).decode('ascii') if qr_txt else None,
                 }
-        except Exception:
-            pass
-        return {'ok': True}
+        except Exception as e:
+            return {'ok': False, 'message': str(e)}
+        return {'ok': True, 'message': 'Receipt printed, but no fiscal data returned'}
 
     def print_return_receipt(self, config, original_order, return_payload):
         key = _derive_2key_3des(config.hdm_password or '')
