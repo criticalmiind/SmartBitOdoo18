@@ -32,7 +32,7 @@ patch(PaymentScreen.prototype, {
         order.hdm_fiscal = result;
       }
     } catch (err) {
-      const msg = (err && (err.message || (err.data && err.data.message))) || String(err);
+      const msg = String(err);
       this.dialog.add(AlertDialog, {
         title: _t("HDM Fiscalization Failed"),
         body: _t(`Unable to fiscalize receipt. Please try again.\n${msg}`),
