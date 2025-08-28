@@ -67,35 +67,52 @@ def recv_exact(sock: socket.socket, n: int) -> bytes:
         buf += chunk
     return buf
 
+# def parse_response_header(hdr: bytes) -> Tuple[int, int, bytes]:
+#     """
+#     Response header format (spec §4.4.2), 10 bytes fixed:
+#       [0] = 0x00
+#       [1] = protocol version (05)
+#       [2:6] = program version (4 bytes, informational)
+#       [6:8] = response code (Big Endian)
+#       [8:10] = response length (Big Endian)
+#     Returns: (resp_code_be, body_len_be, progver_bytes)
+#     """
+#     if len(hdr) < 10:
+#         raise ValueError(f"Incomplete response header ({len(hdr)} bytes)")
+
+#     proto = hdr[1]
+#     progver = hdr[2:6]
+#     resp_code_be = int.from_bytes(hdr[6:8], "big")
+#     body_len_be  = int.from_bytes(hdr[8:10], "big")
+
+#     # For diagnostics also compute little-endian interpretations
+#     resp_code_le = int.from_bytes(hdr[6:8], "little")
+#     body_len_le  = int.from_bytes(hdr[8:10], "little")
+
+#     print(
+#         f"[DEBUG] RespHdr hex={hdr.hex().upper()} "
+#         f"Proto={proto}, ProgVer={progver.hex().upper()}, "
+#         f"RespCodeBE={resp_code_be}, RespCodeLE={resp_code_le}, "
+#         f"BodyLenBE={body_len_be}, BodyLenLE={body_len_le}"
+#     )
+#     return resp_code_be, body_len_be, progver
 def parse_response_header(hdr: bytes) -> Tuple[int, int, bytes]:
-    """
-    Response header format (spec §4.4.2), 10 bytes fixed:
-      [0] = 0x00
-      [1] = protocol version (05)
-      [2:6] = program version (4 bytes, informational)
-      [6:8] = response code (Big Endian)
-      [8:10] = response length (Big Endian)
-    Returns: (resp_code_be, body_len_be, progver_bytes)
-    """
     if len(hdr) < 10:
         raise ValueError(f"Incomplete response header ({len(hdr)} bytes)")
 
     proto = hdr[1]
     progver = hdr[2:6]
-    resp_code_be = int.from_bytes(hdr[6:8], "big")
-    body_len_be  = int.from_bytes(hdr[8:10], "big")
-
-    # For diagnostics also compute little-endian interpretations
-    resp_code_le = int.from_bytes(hdr[6:8], "little")
-    body_len_le  = int.from_bytes(hdr[8:10], "little")
+    # Interpret response code as LITTLE endian
+    resp_code = int.from_bytes(hdr[6:8], "little")
+    body_len  = int.from_bytes(hdr[8:10], "big")
 
     print(
         f"[DEBUG] RespHdr hex={hdr.hex().upper()} "
         f"Proto={proto}, ProgVer={progver.hex().upper()}, "
-        f"RespCodeBE={resp_code_be}, RespCodeLE={resp_code_le}, "
-        f"BodyLenBE={body_len_be}, BodyLenLE={body_len_le}"
+        f"RespCode={resp_code}, BodyLen={body_len}"
     )
-    return resp_code_be, body_len_be, progver
+    return resp_code, body_len, progver
+
 
 def decode_response_body(enc_body: bytes, password: str) -> Dict[str, Any]:
     """Decrypt response body with key1 and parse JSON (spec §4.4.3, §4.4.4)."""
