@@ -252,6 +252,7 @@ class HDMClient:
             s.sendall(header + enc)
             # Response: 11-byte header + encrypted payload
             rh = self._recv_all(s, 11, timeout=10)
+            self._last_hdr = rh
             if len(rh) < 11:
                 raise Exception('Short HDM response header')
             resp_len = (rh[9] << 8) | rh[10]
@@ -316,7 +317,9 @@ class HDMClient:
             # Prefer native login + get datetime for a stronger check
             info = {}
             try:
-                login_resp = self._send_proto(config.hdm_ip, config.hdm_port, self._FC['login'], {
+                fc_login = int(getattr(config, 'hdm_fc_login', None) or self._FC['login'])
+                fc_dt = int(getattr(config, 'hdm_fc_get_datetime', None) or self._FC['get_datetime'])
+                login_resp = self._send_proto(config.hdm_ip, config.hdm_port, fc_login, {
                     'password': config.hdm_password or '',
                     'cashier': int(config.hdm_cashier_id or 0) if (config.hdm_cashier_id or '').isdigit() else 0,
                     'pin': config.hdm_cashier_pin or '',
@@ -327,14 +330,19 @@ class HDMClient:
                     except Exception:
                         self.session_key = None
                 # attempt datetime
-                dt = self._send_proto(config.hdm_ip, config.hdm_port, self._FC['get_datetime'], {}, use_session_key=True, login_key=key)
+                dt = self._send_proto(config.hdm_ip, config.hdm_port, fc_dt, {}, use_session_key=True, login_key=key)
                 info.update({'native_ok': True, 'dt_ok': bool(getattr(dt, 'get', lambda k: False)('ok')) if isinstance(dt, dict) else False})
             except Exception:
                 pass
             # Fallback to lenient ping channel
             resp = self._send(config.hdm_ip, config.hdm_port, key, {'op': 'ping'})
             rtt_ms = int((time.time() - started) * 1000)
-            info = {'ip': config.hdm_ip, 'port': config.hdm_port, 'rtt_ms': rtt_ms}
+            hdr_hex = None
+            try:
+                hdr_hex = getattr(self, '_last_hdr', b'')[:16].hex()
+            except Exception:
+                hdr_hex = None
+            info = {'ip': config.hdm_ip, 'port': config.hdm_port, 'rtt_ms': rtt_ms, 'last_hdr': hdr_hex}
             if isinstance(resp, dict):
                 info.update(resp)
             return {'ok': bool(isinstance(resp, dict) and resp.get('ok')), 'info': info}
@@ -354,7 +362,8 @@ class HDMClient:
             self.session_key = b'DUMMYSESSION12345678901234'[:24]
             self.seq = 0
             return
-        resp = self._send_proto(config.hdm_ip, config.hdm_port, self._FC['login'], {
+        fc_login = int(getattr(config, 'hdm_fc_login', None) or self._FC['login'])
+        resp = self._send_proto(config.hdm_ip, config.hdm_port, fc_login, {
             'password': config.hdm_password or '',
             'cashier': int(config.hdm_cashier_id or 0) if (config.hdm_cashier_id or '').isdigit() else 0,
             'pin': config.hdm_cashier_pin or '',
@@ -363,11 +372,6 @@ class HDMClient:
             raise Exception('Login failed (invalid response)')
         sess = resp.get('session') or resp.get('sessionKey')
         if not sess:
-            # Some devices may ACK without returning session; attempt fallback using first key
-            if resp.get('ack'):
-                self.session_key = key
-                self.seq = 0
-                return
             raise Exception(resp.get('message', 'Login did not return a session key'))
         try:
             self.session_key = b64decode(sess)
@@ -403,7 +407,8 @@ class HDMClient:
         if dep is not None:
             body['dep'] = dep
         try:
-            resp = self._send_proto(config.hdm_ip, config.hdm_port, self._FC['print_receipt'], body, use_session_key=True, login_key=key)
+            fc_print = int(getattr(config, 'hdm_fc_print', None) or self._FC['print_receipt'])
+            resp = self._send_proto(config.hdm_ip, config.hdm_port, fc_print, body, use_session_key=True, login_key=key)
         except Exception as e:
             return {'ok': False, 'message': str(e)}
         # If response contains receipt fields
@@ -423,7 +428,8 @@ class HDMClient:
             }
         # No details, try last copy
         try:
-            details = self._send_proto(config.hdm_ip, config.hdm_port, self._FC['print_last_copy'], {'seq': self.seq + 2}, use_session_key=True, login_key=key)
+            fc_last = int(getattr(config, 'hdm_fc_last_copy', None) or self._FC['print_last_copy'])
+            details = self._send_proto(config.hdm_ip, config.hdm_port, fc_last, {'seq': self.seq + 2}, use_session_key=True, login_key=key)
             if isinstance(details, dict) and (details.get('rseq') or details.get('fiscal') or details.get('verificationNumber')):
                 try:
                     self.seq = int(details.get('rseq') or (self.seq + 1))
@@ -453,7 +459,8 @@ class HDMClient:
             'crn': original_order.hdm_crn or '',
         }
         try:
-            resp = self._send_proto(config.hdm_ip, config.hdm_port, self._FC['print_return_receipt'], body, use_session_key=True, login_key=key)
+            fc_ret = int(getattr(config, 'hdm_fc_print_return', None) or self._FC['print_return_receipt'])
+            resp = self._send_proto(config.hdm_ip, config.hdm_port, fc_ret, body, use_session_key=True, login_key=key)
             if isinstance(resp, dict) and (resp.get('rseq') or resp.get('fiscal') or resp.get('verificationNumber')):
                 try:
                     self.seq = int(resp.get('rseq') or (self.seq + 1))
@@ -472,7 +479,8 @@ class HDMClient:
             pass
         # Try last copy as a fallback
         try:
-            details = self._send_proto(config.hdm_ip, config.hdm_port, self._FC['print_last_copy'], {'seq': self.seq + 1}, use_session_key=True, login_key=key)
+            fc_last = int(getattr(config, 'hdm_fc_last_copy', None) or self._FC['print_last_copy'])
+            details = self._send_proto(config.hdm_ip, config.hdm_port, fc_last, {'seq': self.seq + 1}, use_session_key=True, login_key=key)
             if isinstance(details, dict) and (details.get('rseq') or details.get('fiscal') or details.get('verificationNumber')):
                 qr_txt = details.get('qr') or ''
                 return {
@@ -498,5 +506,6 @@ class HDMClient:
             'description': description or '',
             'cashierid': int(config.hdm_cashier_id or 0) if (config.hdm_cashier_id or '').isdigit() else 0,
         }
-        resp = self._send_proto(config.hdm_ip, config.hdm_port, self._FC['cash_in_out'], body, use_session_key=True, login_key=key)
+        fc_cash = int(getattr(config, 'hdm_fc_cash_in_out', None) or self._FC['cash_in_out'])
+        resp = self._send_proto(config.hdm_ip, config.hdm_port, fc_cash, body, use_session_key=True, login_key=key)
         return {'ok': True} if isinstance(resp, dict) else {'ok': True}

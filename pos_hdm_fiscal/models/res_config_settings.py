@@ -17,6 +17,13 @@ class ResConfigSettings(models.TransientModel):
     hdm_department_id = fields.Char(related='pos_config_id.hdm_department_id', readonly=False)
     hdm_print_locally = fields.Boolean(related='pos_config_id.hdm_print_locally', readonly=False)
     hdm_department = fields.Selection(related='pos_config_id.hdm_department', readonly=False)
+    # Function code mapping
+    hdm_fc_login = fields.Integer(related='pos_config_id.hdm_fc_login', readonly=False)
+    hdm_fc_print = fields.Integer(related='pos_config_id.hdm_fc_print', readonly=False)
+    hdm_fc_last_copy = fields.Integer(related='pos_config_id.hdm_fc_last_copy', readonly=False)
+    hdm_fc_print_return = fields.Integer(related='pos_config_id.hdm_fc_print_return', readonly=False)
+    hdm_fc_get_datetime = fields.Integer(related='pos_config_id.hdm_fc_get_datetime', readonly=False)
+    hdm_fc_cash_in_out = fields.Integer(related='pos_config_id.hdm_fc_cash_in_out', readonly=False)
     # Last test diagnostics (related for display)
     hdm_last_test_ok = fields.Boolean(related='pos_config_id.hdm_last_test_ok', readonly=True)
     hdm_last_test_at = fields.Datetime(related='pos_config_id.hdm_last_test_at', readonly=True)
