@@ -46,7 +46,7 @@ class PosOrder(models.Model):
                     'qr': resp.get('qr_base64'),
                 }
             # Fallback: acknowledge success without structured payload
-            return {'ok': True, 'debug':resp}
+            return {'ok': True}
 
     @api.model
     def hdm_print_return_receipt(self, pos_config_id, original_order_id, return_payload):
