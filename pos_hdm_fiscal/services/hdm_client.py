@@ -418,6 +418,8 @@ class HDMClient:
             dep = int(dep) if dep and str(dep).isdigit() else None
         except Exception:
             dep = None
+        if dep is None:
+            raise Exception('HDM Department ID is not configured. Set a numeric department in POS settings (HDM Department ID).')
         body = {
             'seq': self.seq + 1,
             'paidAmount': paid_total,
@@ -452,23 +454,40 @@ class HDMClient:
             }
         # No details, try last copy
         try:
-            fc_last = int(getattr(config, 'hdm_fc_last_copy', None) or self._FC['print_last_copy'])
-            details = self._send_proto(config.hdm_ip, config.hdm_port, fc_last, {'seq': self.seq + 2}, use_session_key=True, login_key=key)
-            if isinstance(details, dict) and (details.get('rseq') or details.get('fiscal') or details.get('verificationNumber')):
-                try:
-                    self.seq = int(details.get('rseq') or (self.seq + 1))
-                except Exception:
-                    self.seq += 1
-                qr_txt = details.get('qr') or ''
-                return {
-                    'ok': True,
-                    'fiscal_number': details.get('fiscal'),
-                    'verification_number': details.get('verificationNumber'),
-                    'rseq': details.get('rseq'),
-                    'crn': details.get('crn'),
-                    'qr_base64': b64encode(qr_txt.encode('utf-8')).decode('ascii') if qr_txt else None,
-                }
-            return {'ok': True, 'details': details}
+            # Try configured and nearby function codes to fetch last receipt details
+            tried = []
+            candidates = []
+            cfg = getattr(config, 'hdm_fc_last_copy', None)
+            try:
+                if cfg is not None:
+                    candidates.append(int(cfg))
+            except Exception:
+                pass
+            # Add common nearby codes (may vary by firmware)
+            for fc in (self._FC['print_last_copy'], 4, 5, 6, 7, 8, 9):
+                if fc not in candidates:
+                    candidates.append(fc)
+            for fc_last in candidates:
+                tried.append(fc_last)
+                details = self._send_proto(
+                    config.hdm_ip, config.hdm_port, fc_last,
+                    {'seq': self.seq + 2}, use_session_key=True, login_key=key
+                )
+                if isinstance(details, dict) and (details.get('rseq') or details.get('fiscal') or details.get('verificationNumber')):
+                    try:
+                        self.seq = int(details.get('rseq') or (self.seq + 1))
+                    except Exception:
+                        self.seq += 1
+                    qr_txt = details.get('qr') or ''
+                    return {
+                        'ok': True,
+                        'fiscal_number': details.get('fiscal'),
+                        'verification_number': details.get('verificationNumber'),
+                        'rseq': details.get('rseq'),
+                        'crn': details.get('crn'),
+                        'qr_base64': b64encode(qr_txt.encode('utf-8')).decode('ascii') if qr_txt else None,
+                    }
+            return {'ok': True, 'details': {'tried_fc': tried}}
         except Exception as e:
             return {'ok': False, 'message': str(e)}
         return {'ok': True, 'message': 'Receipt printed, but no fiscal data returned'}
