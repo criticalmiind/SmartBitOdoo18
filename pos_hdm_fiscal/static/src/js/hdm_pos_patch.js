@@ -28,8 +28,12 @@ patch(PaymentScreen.prototype, {
         [config.id, payload],
         { context: this.pos?.context || {} }
       );
-      if (result && !config.hdm_print_locally) {
-        order.hdm_fiscal = result;
+      // Attach fiscal data if present, regardless of print location
+      if (result && typeof result === 'object') {
+        const hasFiscal = !!(result.fiscal_number || result.verification_number || result.rseq || result.qr || result.crn);
+        if (hasFiscal) {
+          order.hdm_fiscal = result;
+        }
       }
     } catch (err) {
       const msg = String(err);
@@ -48,6 +52,11 @@ patch(PosOrder.prototype, {
   init_from_JSON(json) {
     super.init_from_JSON(...arguments);
     this.hdm_fiscal = json?.hdm_fiscal || null;  // restore on reload
+  },
+  export_as_JSON() {
+    const json = super.export_as_JSON(...arguments);
+    if (this.hdm_fiscal) json.hdm_fiscal = this.hdm_fiscal; // persist to backend
+    return json;
   },
   export_for_printing() {
     const data = super.export_for_printing(...arguments);
