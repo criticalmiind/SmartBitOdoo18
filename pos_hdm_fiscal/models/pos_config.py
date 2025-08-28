@@ -66,8 +66,6 @@ class PosConfig(models.Model):
             try:
                 deps = client.get_ops_deps(self)
                 dep_list = deps.get('departments')
-                # if not dep_list:
-                raise UserError(_('HDM department fetch failed: %s') % (dep_list))
 
                 # Only replace local list if we actually received departments
                 if dep_list:
@@ -95,8 +93,10 @@ class PosConfig(models.Model):
                         # Auto-select if only one
                         if len(created) == 1:
                             self.hdm_department_id = created.id
+                else:
+                    raise UserError(_('HDM department fetch failed: %s') % (dep_list))
             except Exception as dep_e:
-                raise UserError(_('0001 department fetch failed: %s') % (dep_list))
+                raise UserError(_('0001 department fetch failed: %s') % (dep_e))
                 _logger.warning('HDM department fetch failed: %s', dep_e)
         except Exception as e:
             # Persist failure details
