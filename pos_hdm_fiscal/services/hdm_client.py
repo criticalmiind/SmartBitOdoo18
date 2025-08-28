@@ -454,7 +454,7 @@ class HDMClient:
             }
         # No details, try last copy
         try:
-            # Try configured and nearby function codes to fetch last receipt details
+            # Try configured and a broad range of function codes to fetch last receipt details
             tried = []
             candidates = []
             cfg = getattr(config, 'hdm_fc_last_copy', None)
@@ -463,8 +463,8 @@ class HDMClient:
                     candidates.append(int(cfg))
             except Exception:
                 pass
-            # Add common nearby codes (may vary by firmware)
-            for fc in (self._FC['print_last_copy'], 4, 5, 6, 7, 8, 9):
+            # Add a broad range (1..20) including documented default
+            for fc in list(range(1, 21)):
                 if fc not in candidates:
                     candidates.append(fc)
             for fc_last in candidates:
@@ -487,7 +487,7 @@ class HDMClient:
                         'crn': details.get('crn'),
                         'qr_base64': b64encode(qr_txt.encode('utf-8')).decode('ascii') if qr_txt else None,
                     }
-            return {'ok': True, 'details': {'tried_fc': tried}}
+            return {'ok': True, 'debug': {'tried_fc': tried}}
         except Exception as e:
             return {'ok': False, 'message': str(e)}
         return {'ok': True, 'message': 'Receipt printed, but no fiscal data returned'}
