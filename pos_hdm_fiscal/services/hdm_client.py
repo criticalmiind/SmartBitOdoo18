@@ -293,8 +293,6 @@ class HDMClient:
         try:
             if getattr(config, 'hdm_department_id', False) and getattr(config.hdm_department_id, 'dept_id', False):
                 dept_id = int(config.hdm_department_id.dept_id)
-            # elif getattr(config, 'hdm_departments', None) and len(config.hdm_departments) == 1:
-            #     dept_id = int(config.hdm_departments[0].dept_id)
         except Exception:
             dept_id = None
         payload = {
@@ -329,8 +327,6 @@ class HDMClient:
         try:
             if getattr(config, 'hdm_department_id', False) and getattr(config.hdm_department_id, 'dept_id', False):
                 dept_id = int(config.hdm_department_id.dept_id)
-            # elif getattr(config, 'hdm_departments', None) and len(config.hdm_departments) == 1:
-            #     dept_id = int(config.hdm_departments[0].dept_id)
         except Exception:
             dept_id = None
         resp = self._send(config.hdm_ip, config.hdm_port, key, {
