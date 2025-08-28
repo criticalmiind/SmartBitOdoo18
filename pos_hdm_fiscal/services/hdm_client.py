@@ -84,6 +84,21 @@ class HDMClient:
                 return {'ok': True}
             elif op == 'ping':
                 return {'ok': True}
+            elif op == 'get_ops_deps':
+                # Simulated operators/departments listing
+                return {
+                    'ok': True,
+                    'list': {
+                        'c': [
+                            {'id': 1, 'name': 'Cashier A', 'deps': [1, 2]},
+                            {'id': 2, 'name': 'Cashier B', 'deps': [2]},
+                        ],
+                        'd': [
+                            {'id': 1, 'name': 'VAT 20%', 'type': 1},
+                            {'id': 2, 'name': 'Non‑VAT', 'type': 3},
+                        ],
+                    },
+                }
             elif op in ('get_last_receipt', 'fetch_last_receipt'):
                 if self._last_receipt:
                     data = dict(self._last_receipt)
@@ -186,6 +201,26 @@ class HDMClient:
             raise Exception("HDM connection was closed by the device. Verify protocol/terminator and credentials.")
         raise Exception(f"HDM communication failed: {last_exc}")
 
+    def get_ops_deps(self, config):
+        """Fetch list of HDM operators and departments (best effort).
+
+        In simulation, returns a stubbed list. On real devices, attempts
+        a plain JSON call which may be ignored by hardware requiring the
+        native protocol. In that case the caller should handle exceptions.
+        """
+        key = _derive_2key_3des(config.hdm_password or '')
+        resp = self._send(config.hdm_ip, config.hdm_port, key, {
+            'op': 'get_ops_deps',
+            'password': config.hdm_password or '',
+        })
+        if not isinstance(resp, dict):
+            raise Exception('Invalid response fetching operators/departments')
+        lst = resp.get('list') or {}
+        return {
+            'operators': lst.get('c') or [],
+            'departments': lst.get('d') or [],
+        }
+
     def test_connection(self, config):
         """Check that a connection to the HDM device can be established and
         return diagnostic info when possible.
@@ -252,13 +287,24 @@ class HDMClient:
 
     def print_receipt(self, config, order_payload):
         key = _derive_2key_3des(config.hdm_password or '')
-        resp = self._send(config.hdm_ip, config.hdm_port, key, {
+        # Determine department id from fetched list or legacy field
+        dept_id = None
+        try:
+            if getattr(config, 'hdm_department_ref', False) and config.hdm_department_ref.dept_id:
+                dept_id = int(config.hdm_department_ref.dept_id)
+            elif getattr(config, 'hdm_department_id', None) and str(config.hdm_department_id).isdigit():
+                dept_id = int(config.hdm_department_id)
+            elif getattr(config, 'hdm_departments', None) and len(config.hdm_departments) == 1:
+                dept_id = int(config.hdm_departments[0].dept_id)
+        except Exception:
+            dept_id = None
+        payload = {
             'op': 'print_receipt',
             'order': order_payload,
-            'department': getattr(config, 'hdm_department', None) or 'vat',
-            'department_id': getattr(config, 'hdm_department_id', None) or '',
+            'department_id': dept_id or '',
             'seq': self.seq + 1,
-        })
+        }
+        resp = self._send(config.hdm_ip, config.hdm_port, key, payload)
         # Track device-reported sequence if available
         if isinstance(resp, dict) and resp.get('ok') and resp.get('rseq'):
             try:

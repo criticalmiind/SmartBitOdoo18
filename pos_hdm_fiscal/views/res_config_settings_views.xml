@@ -52,11 +52,28 @@
                     <field name="hdm_password" password="True"/>
                     <field name="hdm_cashier_id"/>
                     <field name="hdm_cashier_pin" password="True"/>
-                    <field name="hdm_department_id"/>
+                    <field name="hdm_department_id" invisible="1"/>
+                    <field name="hdm_departments" widget="one2many_list" readonly="1">
+                      <tree editable="false">
+                        <field name="dept_id"/>
+                        <field name="name"/>
+                        <field name="type"/>
+                      </tree>
+                    </field>
+                    <field name="hdm_department_ref"/>
                     <field name="hdm_department"/>
                     <field name="hdm_print_locally"/>
                     <button string="Test Connection" name="action_hdm_test_connection" type="object" class="oe_highlight"/>
                     <button string="Clear Session" name="action_hdm_clear_session" type="object"/>
+                  </group>
+                  <group string="HDM Function Codes (advanced)">
+                    <field name="hdm_fc_login"/>
+                    <field name="hdm_fc_print"/>
+                    <field name="hdm_fc_last_copy"/>
+                    <field name="hdm_fc_print_return"/>
+                    <field name="hdm_fc_get_datetime"/>
+                    <field name="hdm_fc_cash_in_out"/>
+                    <field name="hdm_fc_get_ops_deps"/>
                   </group>
                 <!-- </div> -->
               </div>

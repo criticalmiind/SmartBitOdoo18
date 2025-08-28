@@ -19,7 +19,7 @@ class PosConfig(models.Model):
     hdm_cashier_id = fields.Char(string='HDM Cashier ID')
     hdm_cashier_pin = fields.Char(string='HDM Cashier PIN')
     hdm_department_id = fields.Char(string='HDM Department ID',
-        help='Department identifier required by some HDM devices to determine VAT vs Non‑VAT.')
+        help='Deprecated: will be replaced by device-fetched departments on Test Connection.')
     hdm_print_locally = fields.Boolean(string='HDM Prints Physical Receipt', default=True,
         help='If disabled, Odoo prints the receipt including HDM fiscal fields returned by the device.')
 
@@ -33,6 +33,15 @@ class PosConfig(models.Model):
         default='vat',
         help='Department code sent to HDM for receipts; determines VAT handling on the device.'
     )
+
+    # Departments fetched from device and a default selection
+    hdm_departments = fields.One2many('pos.hdm.department', 'pos_config_id', string='HDM Departments')
+    hdm_department_ref = fields.Many2one('pos.hdm.department', string='Default Department',
+        domain="[('pos_config_id', '=', id)]",
+        help='Department to use for simple receipts. Set after running Test Connection to fetch from device.')
+    # Function code for operators/departments listing
+    hdm_fc_get_ops_deps = fields.Integer(string='HDM FC Get Operators/Departments', default=1,
+        help='Native protocol function code for fetching operators/departments (default 1).')
 
     # Diagnostics / last test results
     hdm_last_test_ok = fields.Boolean(string='HDM Last Test OK', readonly=True)
@@ -64,6 +73,28 @@ class PosConfig(models.Model):
             })
             if not ok:
                 raise UserError(_('HDM test failed. Check IP/Port/Password.'))
+
+            # Fetch operators and departments from device, then replace local list
+            try:
+                deps = client.get_ops_deps(self)
+                # deps expected: {'operators': [...], 'departments': [{'id':..,'name':..,'type':..}, ...]}
+                dep_list = deps.get('departments') or []
+                # Remove existing
+                self.env['pos.hdm.department'].search([('pos_config_id', '=', self.id)]).unlink()
+                # Create new ones
+                vals_list = [{
+                    'pos_config_id': self.id,
+                    'dept_id': int(d.get('id')) if str(d.get('id') or '').isdigit() else 0,
+                    'name': d.get('name') or '',
+                    'type': int(d.get('type')) if str(d.get('type') or '').isdigit() else 0,
+                } for d in dep_list]
+                # Filter invalid ids
+                vals_list = [v for v in vals_list if v['dept_id']]
+                if vals_list:
+                    self.env['pos.hdm.department'].create(vals_list)
+            except Exception as dep_e:
+                # Keep test as success but include error in message for transparency
+                _logger.warning('HDM department fetch failed: %s', dep_e)
         except Exception as e:
             # Persist failure details
             self.write({
