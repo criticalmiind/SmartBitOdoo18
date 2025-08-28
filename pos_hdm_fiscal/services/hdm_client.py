@@ -362,16 +362,40 @@ class HDMClient:
             self.session_key = b'DUMMYSESSION12345678901234'[:24]
             self.seq = 0
             return
-        fc_login = int(getattr(config, 'hdm_fc_login', None) or self._FC['login'])
-        resp = self._send_proto(config.hdm_ip, config.hdm_port, fc_login, {
-            'password': config.hdm_password or '',
-            'cashier': int(config.hdm_cashier_id or 0) if (config.hdm_cashier_id or '').isdigit() else 0,
-            'pin': config.hdm_cashier_pin or '',
-        }, use_session_key=False, login_key=key)
+        candidates = []
+        try:
+            configured = int(getattr(config, 'hdm_fc_login', None) or 0)
+            if configured:
+                candidates.append(configured)
+        except Exception:
+            pass
+        for fc in (self._FC['login'], 1, 2, 3):
+            if fc not in candidates:
+                candidates.append(fc)
+        resp = None
+        last_exc = None
+        for fc_login in candidates:
+            try:
+                resp = self._send_proto(config.hdm_ip, config.hdm_port, fc_login, {
+                    'password': config.hdm_password or '',
+                    'cashier': int(config.hdm_cashier_id or 0) if (config.hdm_cashier_id or '').isdigit() else 0,
+                    'pin': config.hdm_cashier_pin or '',
+                }, use_session_key=False, login_key=key)
+                if isinstance(resp, dict):
+                    break
+            except Exception as e:
+                last_exc = e
+                continue
         if not isinstance(resp, dict):
-            raise Exception('Login failed (invalid response)')
+            raise Exception(f'Login failed (invalid response). {last_exc or ""}')
         sess = resp.get('session') or resp.get('sessionKey')
         if not sess:
+            # Accept ACK-only login by using the first key as a session key for devices
+            # that do not return a session. We'll verify on first operation.
+            if resp.get('ok') or resp.get('ack'):
+                self.session_key = key
+                self.seq = 0
+                return
             raise Exception(resp.get('message', 'Login did not return a session key'))
         try:
             self.session_key = b64decode(sess)
