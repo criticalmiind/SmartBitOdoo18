@@ -65,9 +65,9 @@ class PosConfig(models.Model):
             # doesn't support this call or only ACKs, don't fail the test.
             try:
                 deps = client.get_ops_deps(self)
-                dep_list = deps.get('departments') or []
-                if not dep_list:
-                    raise UserError(_('HDM department fetch failed: %s') % (dep_list))
+                dep_list = deps.get('departments')
+                # if not dep_list:
+                raise UserError(_('HDM department fetch failed: %s') % (dep_list))
 
                 # Only replace local list if we actually received departments
                 if dep_list:
