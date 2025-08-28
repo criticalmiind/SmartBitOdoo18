@@ -176,7 +176,11 @@ class HDMClient:
                 # operations that don't require a structured response.
                 op = (payload or {}).get('op')
                 if b"\x06" in raw or (len(raw) <= 12 and any(b for b in raw)):
-                    if op in ('login', 'ping', 'cash_in_out', 'print_receipt', 'print_return_receipt'):
+                    if op in (
+                        'login', 'ping', 'cash_in_out',
+                        'print_receipt', 'print_return_receipt',
+                        'get_ops_deps',  # some devices ACK without payload
+                    ):
                         return {'ok': True, 'ack': True}
 
                 preview = text_stripped[:200] if text_stripped else raw[:32].hex()

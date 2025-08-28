@@ -61,34 +61,37 @@ class PosConfig(models.Model):
             if not ok:
                 raise UserError(_('HDM test failed. Check IP/Port/Password.'))
 
-            # Fetch operators and departments from device, then replace local list
+            # Fetch operators and departments from device. If the device
+            # doesn't support this call or only ACKs, don't fail the test.
             try:
                 deps = client.get_ops_deps(self)
                 dep_list = deps.get('departments') or []
-                # Clear selection to avoid FK constraint, then remove existing
-                self.hdm_department_id = False
-                self.env['pos.hdm.department'].search([('pos_config_id', '=', self.id)]).unlink()
-                # Create new ones
-                vals_list = []
-                for d in dep_list:
-                    did = d.get('id')
-                    typ = d.get('type')
-                    if isinstance(did, str) and did.isdigit():
-                        did = int(did)
-                    if isinstance(typ, str) and typ.isdigit():
-                        typ = int(typ)
-                    if isinstance(did, int) and did > 0:
-                        vals_list.append({
-                            'pos_config_id': self.id,
-                            'dept_id': did,
-                            'name': d.get('name') or '',
-                            'type': typ or 0,
-                        })
-                if vals_list:
-                    created = self.env['pos.hdm.department'].create(vals_list)
-                    # Auto-select if only one
-                    if len(created) == 1:
-                        self.hdm_department_id = created.id
+                # Only replace local list if we actually received departments
+                if dep_list:
+                    # Clear selection to avoid FK constraint, then remove existing
+                    self.hdm_department_id = False
+                    self.env['pos.hdm.department'].search([('pos_config_id', '=', self.id)]).unlink()
+                    # Create new ones
+                    vals_list = []
+                    for d in dep_list:
+                        did = d.get('id')
+                        typ = d.get('type')
+                        if isinstance(did, str) and did.isdigit():
+                            did = int(did)
+                        if isinstance(typ, str) and typ.isdigit():
+                            typ = int(typ)
+                        if isinstance(did, int) and did > 0:
+                            vals_list.append({
+                                'pos_config_id': self.id,
+                                'dept_id': did,
+                                'name': d.get('name') or '',
+                                'type': typ or 0,
+                            })
+                    if vals_list:
+                        created = self.env['pos.hdm.department'].create(vals_list)
+                        # Auto-select if only one
+                        if len(created) == 1:
+                            self.hdm_department_id = created.id
             except Exception as dep_e:
                 raise UserError(_('HDM department fetch failed: %s') % (dep_e,))
                 _logger.warning('HDM department fetch failed: %s', dep_e)
