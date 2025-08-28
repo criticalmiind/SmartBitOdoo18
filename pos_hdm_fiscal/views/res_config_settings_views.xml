@@ -58,14 +58,6 @@
                     <button string="Test Connection" name="action_hdm_test_connection" type="object" class="oe_highlight"/>
                     <button string="Clear Session" name="action_hdm_clear_session" type="object"/>
                   </group>
-                  <group string="HDM Function Codes (advanced)">
-                    <field name="hdm_fc_login"/>
-                    <field name="hdm_fc_print"/>
-                    <field name="hdm_fc_last_copy"/>
-                    <field name="hdm_fc_print_return"/>
-                    <field name="hdm_fc_get_datetime"/>
-                    <field name="hdm_fc_cash_in_out"/>
-                  </group>
                 <!-- </div> -->
               </div>
             </div>

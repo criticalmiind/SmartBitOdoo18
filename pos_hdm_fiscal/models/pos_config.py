@@ -34,20 +34,6 @@ class PosConfig(models.Model):
         help='Department code sent to HDM for receipts; determines VAT handling on the device.'
     )
 
-    # Native protocol function codes (configurable per-device variant)
-    hdm_fc_login = fields.Integer(string='HDM FC Login', default=2,
-                                  help='Native protocol function code for Login (default 2).')
-    hdm_fc_print = fields.Integer(string='HDM FC Print Receipt', default=4,
-                                  help='Native protocol function code for Print Receipt (default 4).')
-    hdm_fc_last_copy = fields.Integer(string='HDM FC Print Last Copy', default=5,
-                                      help='Native protocol function code for Print Last Receipt Copy (default 5).')
-    hdm_fc_print_return = fields.Integer(string='HDM FC Print Return Receipt', default=6,
-                                         help='Native protocol function code for Print Return Receipt (default 6).')
-    hdm_fc_get_datetime = fields.Integer(string='HDM FC Get Date/Time', default=12,
-                                         help='Native protocol function code for Get Device Date/Time (default 12).')
-    hdm_fc_cash_in_out = fields.Integer(string='HDM FC Cash In/Out', default=11,
-                                        help='Native protocol function code for Cash In/Out (default 11).')
-
     # Diagnostics / last test results
     hdm_last_test_ok = fields.Boolean(string='HDM Last Test OK', readonly=True)
     hdm_last_test_at = fields.Datetime(string='HDM Last Test At', readonly=True)
