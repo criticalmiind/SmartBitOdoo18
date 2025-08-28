@@ -18,8 +18,21 @@ class PosConfig(models.Model):
     hdm_password = fields.Char(string='HDM Password')
     hdm_cashier_id = fields.Char(string='HDM Cashier ID')
     hdm_cashier_pin = fields.Char(string='HDM Cashier PIN')
+    hdm_department_id = fields.Char(string='HDM Department ID',
+        help='Department identifier required by some HDM devices to determine VAT vs Non‑VAT.')
     hdm_print_locally = fields.Boolean(string='HDM Prints Physical Receipt', default=True,
         help='If disabled, Odoo prints the receipt including HDM fiscal fields returned by the device.')
+
+    # Optional: semantic department type (for devices that use a code)
+    hdm_department = fields.Selection(
+        [
+            ('vat', 'VAT Department'),
+            ('non_vat', 'Non‑VAT Department'),
+        ],
+        string='HDM Department',
+        default='vat',
+        help='Department code sent to HDM for receipts; determines VAT handling on the device.'
+    )
 
     # Diagnostics / last test results
     hdm_last_test_ok = fields.Boolean(string='HDM Last Test OK', readonly=True)

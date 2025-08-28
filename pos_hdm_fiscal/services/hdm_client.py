@@ -246,6 +246,8 @@ class HDMClient:
         resp = self._send(config.hdm_ip, config.hdm_port, key, {
             'op': 'print_receipt',
             'order': order_payload,
+            'department': getattr(config, 'hdm_department', None) or 'vat',
+            'department_id': getattr(config, 'hdm_department_id', None) or '',
             'seq': self.seq + 1,
         })
         # Track device-reported sequence if available
@@ -266,6 +268,8 @@ class HDMClient:
                 'fiscal_number': original_order.hdm_fiscal_number,
             },
             'return': return_payload,
+            'department': getattr(config, 'hdm_department', None) or 'vat',
+            'department_id': getattr(config, 'hdm_department_id', None) or '',
             'seq': self.seq + 1,
         })
         if isinstance(resp, dict) and resp.get('ok') and resp.get('rseq'):
