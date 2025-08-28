@@ -35,29 +35,29 @@ def build_request(password: str) -> bytes:
 
 def parse_response(resp: bytes, password: str):
     """Decrypt and parse JSON from HDM response."""
+    # --- Parse header fields ---
     proto_version = resp[1]
     prog_version = resp[2:6].hex()
     resp_code = int.from_bytes(resp[6:8], "big")
     resp_len = int.from_bytes(resp[8:10], "big")
 
-    print(f"[DEBUG] Protocol={proto_version}, ProgramVer={prog_version}, "
-          f"RespCode={resp_code}, BodyLen={resp_len}")
+    print(f"[DEBUG] Proto={proto_version}, ProgVer={prog_version}, "
+          f"RespCode={resp_code}, BodyLen={resp_len}, Total={len(resp)}")
 
     if resp_len == 0:
-        # Only header present → an error code
         raise ValueError(f"HDM returned error code {resp_code}, no body")
 
     enc_data = resp[10:10 + resp_len]
-    if not enc_data:
-        raise ValueError("Encrypted body missing")
+    if len(enc_data) != resp_len:
+        raise ValueError(f"Expected {resp_len} bytes body, got {len(enc_data)}")
 
-    # Decrypt
+    # --- Decrypt body ---
     key = get_first_key(password)
     cipher = DES3.new(key, DES3.MODE_ECB)
-    data = unpad(cipher.decrypt(enc_data), 8)
+    decrypted = cipher.decrypt(enc_data)
+    data = unpad(decrypted, 8)
 
     return json.loads(data.decode("utf-8"))
-
 
 def get_departments():
     req = build_request(HDM_PASSWORD)
@@ -77,7 +77,7 @@ def get_departments():
         # Determine body length
         resp_len = int.from_bytes(header[8:10], "big")
 
-        # Now read the full encrypted body
+        # Read encrypted body
         body = b""
         while len(body) < resp_len:
             chunk = s.recv(resp_len - len(body))
