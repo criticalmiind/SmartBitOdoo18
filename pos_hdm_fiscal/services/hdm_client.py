@@ -293,8 +293,8 @@ class HDMClient:
         try:
             if getattr(config, 'hdm_department_id', False) and getattr(config.hdm_department_id, 'dept_id', False):
                 dept_id = int(config.hdm_department_id.dept_id)
-            elif getattr(config, 'hdm_departments', None) and len(config.hdm_departments) == 1:
-                dept_id = int(config.hdm_departments[0].dept_id)
+            # elif getattr(config, 'hdm_departments', None) and len(config.hdm_departments) == 1:
+            #     dept_id = int(config.hdm_departments[0].dept_id)
         except Exception:
             dept_id = None
         payload = {
@@ -323,6 +323,16 @@ class HDMClient:
 
     def print_return_receipt(self, config, original_order, return_payload):
         key = _derive_2key_3des(config.hdm_password or '')
+        # Determine department id from selected Many2one, or fallback to the
+        # single fetched department if only one exists
+        dept_id = None
+        try:
+            if getattr(config, 'hdm_department_id', False) and getattr(config.hdm_department_id, 'dept_id', False):
+                dept_id = int(config.hdm_department_id.dept_id)
+            # elif getattr(config, 'hdm_departments', None) and len(config.hdm_departments) == 1:
+            #     dept_id = int(config.hdm_departments[0].dept_id)
+        except Exception:
+            dept_id = None
         resp = self._send(config.hdm_ip, config.hdm_port, key, {
             'op': 'print_return_receipt',
             'original': {
@@ -331,8 +341,7 @@ class HDMClient:
                 'fiscal_number': original_order.hdm_fiscal_number,
             },
             'return': return_payload,
-            'department': getattr(config, 'hdm_department', None) or 'vat',
-            'department_id': getattr(config, 'hdm_department_id', None) or '',
+            'department_id': dept_id or '',
             'seq': self.seq + 1,
         })
         if isinstance(resp, dict) and resp.get('ok') and resp.get('rseq'):

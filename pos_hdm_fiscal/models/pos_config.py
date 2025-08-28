@@ -22,7 +22,7 @@ class PosConfig(models.Model):
         help='If disabled, Odoo prints the receipt including HDM fiscal fields returned by the device.')
 
     # Departments fetched from device, and the selected department for service
-    hdm_departments = fields.One2many('pos.hdm.department', 'pos_config_id', string='HDM Departments')
+    # hdm_departments = fields.One2many('pos.hdm.department', 'pos_config_id', string='HDM Departments')
     hdm_department_id = fields.Many2one(
         'pos.hdm.department',
         string='HDM Department',

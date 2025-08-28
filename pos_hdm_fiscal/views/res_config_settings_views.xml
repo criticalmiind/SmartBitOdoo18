@@ -52,13 +52,13 @@
                     <field name="hdm_password" password="True"/>
                     <field name="hdm_cashier_id"/>
                     <field name="hdm_cashier_pin" password="True"/>
-                    <field name="hdm_departments" widget="one2many_list" readonly="1">
+                    <!-- <field name="hdm_departments" widget="one2many_list" readonly="1">
                       <tree editable="false">
                         <field name="dept_id"/>
                         <field name="name"/>
                         <field name="type"/>
                       </tree>
-                    </field>
+                    </field> -->
                     <field name="hdm_department_id"/>
                     <field name="hdm_print_locally"/>
                     <button string="Test Connection" name="action_hdm_test_connection" type="object" class="oe_highlight"/>
