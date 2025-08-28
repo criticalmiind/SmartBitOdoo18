@@ -4,9 +4,23 @@ import hashlib
 from Crypto.Cipher import DES3
 from Crypto.Util.Padding import pad, unpad
 
-HDM_IP = "10.254.7.228"
+# fiscal registration information is 
+
+# ip 123.123.123.14
+
+# port 8123
+
+# department 1
+
+# fiscal registration password :  krLGfzRh
+
+# Cashir id 3
+
+# Cashir PIN 3
+
+HDM_IP = "123.123.123.14"
 HDM_PORT = 8123
-HDM_PASSWORD = "4bj0ihkw"
+HDM_PASSWORD = "krLGfzRh"
 
 def get_first_key(password: str) -> bytes:
     """Generate 3DES key from SHA256(password)."""
