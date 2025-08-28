@@ -96,6 +96,7 @@ class PosConfig(models.Model):
                         if len(created) == 1:
                             self.hdm_department_id = created.id
             except Exception as dep_e:
+                raise UserError(_('0001 department fetch failed: %s') % (dep_list))
                 _logger.warning('HDM department fetch failed: %s', dep_e)
         except Exception as e:
             # Persist failure details
