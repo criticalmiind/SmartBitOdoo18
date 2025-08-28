@@ -441,8 +441,7 @@ class HDMClient:
                 candidates.append(configured)
         except Exception:
             pass
-        # Try a broader range to discover actual login function code
-        for fc in ([self._FC["login"]] + list(range(1, 21))):
+        for fc in (self._FC["login"], 1, 2, 3):
             if fc not in candidates:
                 candidates.append(fc)
 
@@ -480,6 +479,12 @@ class HDMClient:
         )
         if sess:
             self.session_key = self._normalize_session_key(sess)
+            self.seq = 0
+            return
+
+        # ACK-only login: keep using derived login key as session key
+        if resp.get("ok") or resp.get("ack"):
+            self.session_key = login_key
             self.seq = 0
             return
 
