@@ -23,9 +23,13 @@ class PosConfig(models.Model):
 
     # Departments fetched from device, and the selected department for service
     hdm_departments = fields.One2many('pos.hdm.department', 'pos_config_id', string='HDM Departments')
-    hdm_department_id = fields.Many2one('pos.hdm.department', string='HDM Department',
+    hdm_department_id = fields.Many2one(
+        'pos.hdm.department',
+        string='HDM Department',
         domain="[('pos_config_id', '=', id)]",
-        help='Department to send to HDM when printing receipts. Fetched from device on Test Connection.')
+        ondelete='set null',
+        help='Department to send to HDM when printing receipts. Fetched from device on Test Connection.'
+    )
     # Function code for operators/departments listing
     hdm_fc_get_ops_deps = fields.Integer(string='HDM FC Get Operators/Departments', default=1,
         help='Native protocol function code for fetching operators/departments (default 1).')
@@ -65,7 +69,8 @@ class PosConfig(models.Model):
             try:
                 deps = client.get_ops_deps(self)
                 dep_list = deps.get('departments') or []
-                # Remove existing
+                # Clear selection to avoid FK constraint, then remove existing
+                self.hdm_department_id = False
                 self.env['pos.hdm.department'].search([('pos_config_id', '=', self.id)]).unlink()
                 # Create new ones
                 vals_list = []
