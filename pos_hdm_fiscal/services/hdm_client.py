@@ -36,6 +36,7 @@ class HDMClient:
         self.session_key = None
         self.seq = 0
         self.closed = False
+        self._last_receipt = None
 
     def is_closed(self):
         return self.closed
@@ -55,7 +56,7 @@ class HDMClient:
                 return {'ok': True, 'session': 'sim-session'}
             elif op == 'print_receipt':
                 self.seq += 1
-                return {
+                self._last_receipt = {
                     'ok': True,
                     'fiscal_number': f'AM-{int(time.time())}',
                     'verification_number': f'V-{self.seq:06d}',
@@ -65,9 +66,10 @@ class HDMClient:
                         f'QR:{self.seq}'.encode('utf-8')
                     ).decode('ascii'),
                 }
+                return dict(self._last_receipt)
             elif op == 'print_return_receipt':
                 self.seq += 1
-                return {
+                self._last_receipt = {
                     'ok': True,
                     'fiscal_number': f'AMR-{int(time.time())}',
                     'verification_number': f'VR-{self.seq:06d}',
@@ -77,10 +79,17 @@ class HDMClient:
                         f'RETURN:{self.seq}'.encode('utf-8')
                     ).decode('ascii'),
                 }
+                return dict(self._last_receipt)
             elif op == 'cash_in_out':
                 return {'ok': True}
             elif op == 'ping':
                 return {'ok': True}
+            elif op in ('get_last_receipt', 'fetch_last_receipt'):
+                if self._last_receipt:
+                    data = dict(self._last_receipt)
+                    data['ok'] = True
+                    return data
+                return {'ok': False, 'message': 'No last receipt data in simulator'}
             else:
                 return {'ok': False, 'message': 'Unsupported op in simulator'}
 
@@ -256,6 +265,15 @@ class HDMClient:
                 self.seq = int(resp.get('rseq'))
             except Exception:
                 pass
+        # If acknowledgment without details, try to fetch last receipt info
+        if isinstance(resp, dict) and resp.get('ok') and not any(resp.get(k) for k in ('fiscal_number','verification_number','rseq','crn','qr_base64')):
+            try:
+                details = self._send(config.hdm_ip, config.hdm_port, key, {'op': 'get_last_receipt'})
+                if isinstance(details, dict) and details.get('ok') and any(details.get(k) for k in ('fiscal_number','verification_number','rseq','crn','qr_base64')):
+                    return details
+                return {'ok': True, 'debug': resp}
+            except Exception as e:
+                return {'ok': True, 'debug': {'error': str(e), **resp}}
         return resp
 
     def print_return_receipt(self, config, original_order, return_payload):
@@ -277,6 +295,14 @@ class HDMClient:
                 self.seq = int(resp.get('rseq'))
             except Exception:
                 pass
+        if isinstance(resp, dict) and resp.get('ok') and not any(resp.get(k) for k in ('fiscal_number','verification_number','rseq','crn','qr_base64')):
+            try:
+                details = self._send(config.hdm_ip, config.hdm_port, key, {'op': 'get_last_receipt'})
+                if isinstance(details, dict) and details.get('ok') and any(details.get(k) for k in ('fiscal_number','verification_number','rseq','crn','qr_base64')):
+                    return details
+                return {'ok': True, 'debug': resp}
+            except Exception as e:
+                return {'ok': True, 'debug': {'error': str(e), **resp}}
         return resp
 
     def cash_in_out(self, config, amount, is_cashin, description):
