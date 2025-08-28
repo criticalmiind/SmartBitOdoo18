@@ -35,20 +35,29 @@ def build_request(password: str) -> bytes:
 
 def parse_response(resp: bytes, password: str):
     """Decrypt and parse JSON from HDM response."""
-    # Extract encrypted payload length (bytes 9–10 = resp[8:10])
+    proto_version = resp[1]
+    prog_version = resp[2:6].hex()
+    resp_code = int.from_bytes(resp[6:8], "big")
     resp_len = int.from_bytes(resp[8:10], "big")
 
-    # Encrypted body starts at byte 11 (index 10)
+    print(f"[DEBUG] Protocol={proto_version}, ProgramVer={prog_version}, "
+          f"RespCode={resp_code}, BodyLen={resp_len}")
+
+    if resp_len == 0:
+        # Only header present → an error code
+        raise ValueError(f"HDM returned error code {resp_code}, no body")
+
     enc_data = resp[10:10 + resp_len]
     if not enc_data:
-        raise ValueError("No encrypted body found in HDM response")
+        raise ValueError("Encrypted body missing")
 
-    # Decrypt with first key
+    # Decrypt
     key = get_first_key(password)
     cipher = DES3.new(key, DES3.MODE_ECB)
     data = unpad(cipher.decrypt(enc_data), 8)
 
     return json.loads(data.decode("utf-8"))
+
 
 def get_departments():
     req = build_request(HDM_PASSWORD)
