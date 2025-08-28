@@ -85,20 +85,72 @@ class HDMClient:
                 return {'ok': False, 'message': 'Unsupported op in simulator'}
 
         # Placeholder for real hardware protocol.
+        # Use a simple line-delimited JSON framing and robust receiving.
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(10)
         s.connect((ip, port))
         try:
             data = json.dumps(payload).encode('utf-8')
-            s.sendall(data)
-            buf = s.recv(8192)
+            # Many devices expect a newline terminator for a single request.
+            s.sendall(data + b"\n")
+
+            chunks = []
+            start = time.time()
+            # Read until newline, connection close, or timeout.
+            while True:
+                try:
+                    buf = s.recv(4096)
+                except socket.timeout:
+                    break
+                if not buf:
+                    break
+                chunks.append(buf)
+                if b"\n" in buf:
+                    break
+                if time.time() - start > 10:
+                    # Safety guard: overall read timeout
+                    break
+
+            raw = b"".join(chunks)
+            if not raw:
+                raise Exception("No response from HDM device (empty reply)")
+
+            # Trim to first newline if present (line-delimited JSON)
+            nl = raw.find(b"\n")
+            if nl != -1:
+                raw = raw[:nl]
+
             try:
-                text = buf.decode('utf-8')
+                text = raw.decode('utf-8')
             except UnicodeDecodeError:
-                text = buf.decode('latin-1')
-            return json.loads(text)
+                text = raw.decode('latin-1', errors='ignore')
+
+            text_stripped = text.strip()
+            if not text_stripped:
+                raise Exception("Empty/whitespace response from HDM device")
+
+            # Try strict JSON first
+            try:
+                return json.loads(text_stripped)
+            except json.JSONDecodeError:
+                # Best-effort: extract JSON object between braces
+                start_idx = text_stripped.find('{')
+                end_idx = text_stripped.rfind('}')
+                if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                    candidate = text_stripped[start_idx:end_idx + 1]
+                    try:
+                        return json.loads(candidate)
+                    except Exception:
+                        pass
+                # Log the first 200 characters to help diagnostics
+                preview = text_stripped[:200]
+                _logger.error("Invalid response from HDM device: %s", preview)
+                raise Exception(f"Invalid response from HDM device: {preview}")
         finally:
-            s.close()
+            try:
+                s.close()
+            except Exception:
+                pass
 
     def test_connection(self, config) -> bool:
         """Check that a connection to the HDM device can be established.
@@ -149,15 +201,22 @@ class HDMClient:
 
     def print_receipt(self, config, order_payload):
         key = _derive_2key_3des(config.hdm_password or '')
-        return self._send(config.hdm_ip, config.hdm_port, key, {
+        resp = self._send(config.hdm_ip, config.hdm_port, key, {
             'op': 'print_receipt',
             'order': order_payload,
             'seq': self.seq + 1,
         })
+        # Track device-reported sequence if available
+        if isinstance(resp, dict) and resp.get('ok') and resp.get('rseq'):
+            try:
+                self.seq = int(resp.get('rseq'))
+            except Exception:
+                pass
+        return resp
 
     def print_return_receipt(self, config, original_order, return_payload):
         key = _derive_2key_3des(config.hdm_password or '')
-        return self._send(config.hdm_ip, config.hdm_port, key, {
+        resp = self._send(config.hdm_ip, config.hdm_port, key, {
             'op': 'print_return_receipt',
             'original': {
                 'crn': original_order.hdm_crn,
@@ -167,6 +226,12 @@ class HDMClient:
             'return': return_payload,
             'seq': self.seq + 1,
         })
+        if isinstance(resp, dict) and resp.get('ok') and resp.get('rseq'):
+            try:
+                self.seq = int(resp.get('rseq'))
+            except Exception:
+                pass
+        return resp
 
     def cash_in_out(self, config, amount, is_cashin, description):
         key = _derive_2key_3des(config.hdm_password or '')
