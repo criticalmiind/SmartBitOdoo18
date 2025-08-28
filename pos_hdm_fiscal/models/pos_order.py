@@ -45,7 +45,8 @@ class PosOrder(models.Model):
                     'crn': resp.get('crn'),
                     'qr': resp.get('qr_base64'),
                 }
-            return False
+            # Fallback: acknowledge success without structured payload
+            return {'ok': True}
 
     @api.model
     def hdm_print_return_receipt(self, pos_config_id, original_order_id, return_payload):
@@ -72,7 +73,7 @@ class PosOrder(models.Model):
                     'crn': resp.get('crn'),
                     'qr': resp.get('qr_base64'),
                 }
-            return False
+            return {'ok': True}
 
     @api.model
     def hdm_cash_in_out(self, pos_config_id, amount, is_cashin, description=None):

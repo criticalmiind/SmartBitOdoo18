@@ -15,6 +15,11 @@ class ResConfigSettings(models.TransientModel):
     hdm_cashier_id = fields.Char(related='pos_config_id.hdm_cashier_id', readonly=False)
     hdm_cashier_pin = fields.Char(related='pos_config_id.hdm_cashier_pin', readonly=False)
     hdm_print_locally = fields.Boolean(related='pos_config_id.hdm_print_locally', readonly=False)
+    # Last test diagnostics (related for display)
+    hdm_last_test_ok = fields.Boolean(related='pos_config_id.hdm_last_test_ok', readonly=True)
+    hdm_last_test_at = fields.Datetime(related='pos_config_id.hdm_last_test_at', readonly=True)
+    hdm_last_test_message = fields.Char(related='pos_config_id.hdm_last_test_message', readonly=True)
+    hdm_last_machine_info = fields.Text(related='pos_config_id.hdm_last_machine_info', readonly=True)
 
     def action_hdm_test_connection(self):
         self.ensure_one()

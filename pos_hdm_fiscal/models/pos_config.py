@@ -3,6 +3,7 @@
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError
 import logging
+import json
 
 _logger = logging.getLogger(__name__)
 
@@ -20,6 +21,12 @@ class PosConfig(models.Model):
     hdm_print_locally = fields.Boolean(string='HDM Prints Physical Receipt', default=True,
         help='If disabled, Odoo prints the receipt including HDM fiscal fields returned by the device.')
 
+    # Diagnostics / last test results
+    hdm_last_test_ok = fields.Boolean(string='HDM Last Test OK', readonly=True)
+    hdm_last_test_at = fields.Datetime(string='HDM Last Test At', readonly=True)
+    hdm_last_test_message = fields.Char(string='HDM Last Test Message', readonly=True)
+    hdm_last_machine_info = fields.Text(string='HDM Last Machine Info', readonly=True)
+
     def action_hdm_clear_session(self):
         self.ensure_one()
         self.env['pos.hdm.session']._clear_session(self.id)
@@ -30,10 +37,27 @@ class PosConfig(models.Model):
         if not self.hdm_enabled:
             raise UserError(_('Enable HDM first.'))
         client = self.env['pos.hdm.session']._get_client(self.id, simulate=self.hdm_simulate)
+        from datetime import datetime
         try:
-            ok = client.test_connection(self)
+            result = client.test_connection(self)
+            ok = bool(result) and bool(result.get('ok')) if isinstance(result, dict) else bool(result)
+            info = result.get('info') if isinstance(result, dict) else {}
+            # Persist outcome
+            self.write({
+                'hdm_last_test_ok': ok,
+                'hdm_last_test_at': fields.Datetime.now(),
+                'hdm_last_test_message': _('Success') if ok else _('Failed'),
+                'hdm_last_machine_info': json.dumps(info or {}, ensure_ascii=False),
+            })
             if not ok:
                 raise UserError(_('HDM test failed. Check IP/Port/Password.'))
         except Exception as e:
+            # Persist failure details
+            self.write({
+                'hdm_last_test_ok': False,
+                'hdm_last_test_at': fields.Datetime.now(),
+                'hdm_last_test_message': str(e),
+                'hdm_last_machine_info': json.dumps({'error': str(e)}, ensure_ascii=False),
+            })
             raise UserError(_('HDM test failed: %s') % (e,))
         return True

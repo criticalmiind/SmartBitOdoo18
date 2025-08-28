@@ -59,6 +59,18 @@
                 <!-- </div> -->
               </div>
             </div>
+            <div class="col-12 col-lg-6 o_setting_box">
+              <div class="o_setting_left_pane"></div>
+              <div class="o_setting_right_pane">
+                <label string="Last HDM Test Result"/>
+                <group>
+                  <field name="hdm_last_test_ok" widget="boolean_toggle"/>
+                  <field name="hdm_last_test_at"/>
+                  <field name="hdm_last_test_message"/>
+                  <field name="hdm_last_machine_info" nolabel="1" widget="text"/>
+                </group>
+              </div>
+            </div>
           </div>
         </div>
       </xpath>

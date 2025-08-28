@@ -177,8 +177,9 @@ class HDMClient:
             raise Exception("HDM connection was closed by the device. Verify protocol/terminator and credentials.")
         raise Exception(f"HDM communication failed: {last_exc}")
 
-    def test_connection(self, config) -> bool:
-        """Check that a connection to the HDM device can be established.
+    def test_connection(self, config):
+        """Check that a connection to the HDM device can be established and
+        return diagnostic info when possible.
 
         The previous implementation attempted to send a ``ping`` command and
         waited for a JSON response.  In real deployments some devices simply
@@ -189,13 +190,16 @@ class HDMClient:
         """
 
         if self.simulate:
-            # In simulation we keep the previous behaviour so unit tests that
-            # expect a ping response continue to work.
             key = _derive_2key_3des(config.hdm_password or '')
+            started = time.time()
             resp = self._send(
                 config.hdm_ip, config.hdm_port, key, {'op': 'ping'}
             )
-            return bool(resp.get('ok'))
+            rtt_ms = int((time.time() - started) * 1000)
+            info = {'simulate': True, 'rtt_ms': rtt_ms}
+            if isinstance(resp, dict):
+                info.update(resp)
+            return {'ok': bool(isinstance(resp, dict) and resp.get('ok')), 'info': info}
 
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -208,7 +212,20 @@ class HDMClient:
                 s.close()
             except Exception:
                 pass
-        return True
+        # Try a ping to obtain device diagnostics, tolerant to ACK-only
+        key = _derive_2key_3des(config.hdm_password or '')
+        started = time.time()
+        try:
+            resp = self._send(config.hdm_ip, config.hdm_port, key, {'op': 'ping'})
+            rtt_ms = int((time.time() - started) * 1000)
+            info = {'ip': config.hdm_ip, 'port': config.hdm_port, 'rtt_ms': rtt_ms}
+            if isinstance(resp, dict):
+                info.update(resp)
+            return {'ok': bool(isinstance(resp, dict) and resp.get('ok')), 'info': info}
+        except Exception as e:
+            # Even if ping fails, connection was possible; return details
+            rtt_ms = int((time.time() - started) * 1000)
+            return {'ok': False, 'info': {'ip': config.hdm_ip, 'port': config.hdm_port, 'rtt_ms': rtt_ms, 'error': str(e)}}
 
     def ensure_login(self, config):
         if self.session_key:
