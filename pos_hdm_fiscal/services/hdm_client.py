@@ -85,72 +85,88 @@ class HDMClient:
                 return {'ok': False, 'message': 'Unsupported op in simulator'}
 
         # Placeholder for real hardware protocol.
-        # Use a simple line-delimited JSON framing and robust receiving.
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(10)
-        s.connect((ip, port))
-        try:
-            data = json.dumps(payload).encode('utf-8')
-            # Many devices expect a newline terminator for a single request.
-            s.sendall(data + b"\n")
+        # Try multiple on-the-wire formats since some devices require
+        # different line endings or no terminator at all. Also handle
+        # connection resets gracefully and attempt to parse partial data.
 
+        def _try_exchange(terminator: bytes):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(10)
+            s.connect((ip, port))
             chunks = []
-            start = time.time()
-            # Read until newline, connection close, or timeout.
-            while True:
-                try:
-                    buf = s.recv(4096)
-                except socket.timeout:
-                    break
-                if not buf:
-                    break
-                chunks.append(buf)
-                if b"\n" in buf:
-                    break
-                if time.time() - start > 10:
-                    # Safety guard: overall read timeout
-                    break
-
-            raw = b"".join(chunks)
-            if not raw:
-                raise Exception("No response from HDM device (empty reply)")
-
-            # Trim to first newline if present (line-delimited JSON)
-            nl = raw.find(b"\n")
-            if nl != -1:
-                raw = raw[:nl]
-
             try:
-                text = raw.decode('utf-8')
-            except UnicodeDecodeError:
-                text = raw.decode('latin-1', errors='ignore')
+                data = json.dumps(payload).encode('utf-8')
+                s.sendall(data + terminator)
 
-            text_stripped = text.strip()
-            if not text_stripped:
-                raise Exception("Empty/whitespace response from HDM device")
-
-            # Try strict JSON first
-            try:
-                return json.loads(text_stripped)
-            except json.JSONDecodeError:
-                # Best-effort: extract JSON object between braces
-                start_idx = text_stripped.find('{')
-                end_idx = text_stripped.rfind('}')
-                if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                    candidate = text_stripped[start_idx:end_idx + 1]
+                start = time.time()
+                while True:
                     try:
-                        return json.loads(candidate)
-                    except Exception:
-                        pass
-                # Log the first 200 characters to help diagnostics
-                preview = text_stripped[:200]
-                _logger.error("Invalid response from HDM device: %s", preview)
-                raise Exception(f"Invalid response from HDM device: {preview}")
-        finally:
+                        buf = s.recv(4096)
+                    except socket.timeout:
+                        break
+                    except ConnectionResetError:
+                        # If we already received something, treat as end-of-stream
+                        if chunks:
+                            break
+                        raise
+                    if not buf:
+                        break
+                    chunks.append(buf)
+                    if b"\n" in buf:
+                        break
+                    if time.time() - start > 10:
+                        break
+
+                raw = b"".join(chunks)
+                if not raw:
+                    raise Exception("No response from HDM device (empty reply)")
+
+                # For line-delimited protocols, keep up to first newline
+                nl = raw.find(b"\n")
+                if nl != -1:
+                    raw = raw[:nl]
+
+                try:
+                    text = raw.decode('utf-8')
+                except UnicodeDecodeError:
+                    text = raw.decode('latin-1', errors='ignore')
+
+                text_stripped = text.strip()
+                if not text_stripped:
+                    raise Exception("Empty/whitespace response from HDM device")
+
+                try:
+                    return json.loads(text_stripped)
+                except json.JSONDecodeError:
+                    start_idx = text_stripped.find('{')
+                    end_idx = text_stripped.rfind('}')
+                    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                        candidate = text_stripped[start_idx:end_idx + 1]
+                        try:
+                            return json.loads(candidate)
+                        except Exception:
+                            pass
+                    preview = text_stripped[:200]
+                    _logger.error("Invalid response from HDM device: %s", preview)
+                    raise Exception(f"Invalid response from HDM device: {preview}")
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+
+        last_exc = None
+        for term in (b"\n", b"", b"\r\n"):
             try:
-                s.close()
-            except Exception:
-                pass
+                return _try_exchange(term)
+            except (ConnectionResetError, BrokenPipeError, socket.timeout, OSError, Exception) as e:
+                last_exc = e
+                # Try next framing style
+                continue
+        # If everything failed, raise a clean, user-friendly error
+        if isinstance(last_exc, ConnectionResetError):
+            raise Exception("HDM connection was closed by the device. Verify protocol/terminator and credentials.")
+        raise Exception(f"HDM communication failed: {last_exc}")
 
     def test_connection(self, config) -> bool:
         """Check that a connection to the HDM device can be established.
