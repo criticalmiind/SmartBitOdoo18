@@ -22,6 +22,7 @@ class PosConfig(models.Model):
         help='If disabled, Odoo prints the receipt including HDM fiscal fields returned by the device.')
 
     # Departments fetched from device, and the selected department for service
+    hdm_departments = fields.One2many('pos.hdm.department', 'pos_config_id', string='HDM Departments')
     hdm_department_id = fields.Many2one(
         'pos.hdm.department',
         string='HDM Department',
@@ -41,64 +42,66 @@ class PosConfig(models.Model):
         self.env['pos.hdm.session']._clear_session(self.id)
         return True
 
-    def action_hdm_test_connection(self):
-        self.ensure_one()
-        if not self.hdm_enabled:
-            raise UserError(_('Enable HDM first.'))
-        client = self.env['pos.hdm.session']._get_client(self.id, simulate=self.hdm_simulate)
-        from datetime import datetime
-        try:
-            result = client.test_connection(self)
-            ok = bool(result) and bool(result.get('ok')) if isinstance(result, dict) else bool(result)
-            info = result.get('info') if isinstance(result, dict) else {}
-            # Persist outcome
-            self.write({
-                'hdm_last_test_ok': ok,
-                'hdm_last_test_at': fields.Datetime.now(),
-                'hdm_last_test_message': _('Success') if ok else _('Failed'),
-                'hdm_last_machine_info': json.dumps(info or {}, ensure_ascii=False),
-            })
-            if not ok:
-                raise UserError(_('HDM test failed. Check IP/Port/Password.'))
+def action_hdm_test_connection(self):
+    self.ensure_one()
+    if not self.hdm_enabled:
+        raise UserError(_('Enable HDM first.'))
+    client = self.env['pos.hdm.session']._get_client(self.id, simulate=self.hdm_simulate)
 
-            # Fetch operators and departments from device, then replace local list
-            try:
-                deps = client.get_ops_deps(self)
-                dep_list = deps.get('departments') or []
-                # Clear selection to avoid FK constraint, then remove existing
-                self.hdm_department_id = False
-                self.env['pos.hdm.department'].search([('pos_config_id', '=', self.id)]).unlink()
-                # Create new ones
-                vals_list = []
-                for d in dep_list:
-                    did = d.get('id')
-                    typ = d.get('type')
-                    if isinstance(did, str) and did.isdigit():
-                        did = int(did)
-                    if isinstance(typ, str) and typ.isdigit():
-                        typ = int(typ)
-                    if isinstance(did, int) and did > 0:
-                        vals_list.append({
-                            'pos_config_id': self.id,
-                            'dept_id': did,
-                            'name': d.get('name') or '',
-                            'type': typ or 0,
-                        })
-                if vals_list:
-                    created = self.env['pos.hdm.department'].create(vals_list)
-                    # Auto-select if only one
-                    if len(created) == 1:
-                        self.hdm_department_id = created.id
-            except Exception as dep_e:
-                raise UserError(_('HDM department fetch failed: %s') % (dep_e,))
-                _logger.warning('HDM department fetch failed: %s', dep_e)
-        except Exception as e:
-            # Persist failure details
-            self.write({
-                'hdm_last_test_ok': False,
-                'hdm_last_test_at': fields.Datetime.now(),
-                'hdm_last_test_message': str(e),
-                'hdm_last_machine_info': json.dumps({'error': str(e)}, ensure_ascii=False),
-            })
-            raise UserError(_('HDM test failed: %s') % (e,))
-        return True
+    try:
+        result = client.test_connection(self)
+        ok = bool(result) and bool(result.get('ok')) if isinstance(result, dict) else bool(result)
+        info = result.get('info') if isinstance(result, dict) else {}
+
+        self.write({
+            'hdm_last_test_ok': ok,
+            'hdm_last_test_at': fields.Datetime.now(),
+            'hdm_last_test_message': _('Success') if ok else _('Failed'),
+            'hdm_last_machine_info': json.dumps(info or {}, ensure_ascii=False),
+        })
+        if not ok:
+            raise UserError(_('HDM test failed. Check IP/Port/Password.'))
+
+        # Fetch and (re)build department list
+        try:
+            deps = client.get_ops_deps(self)  # <-- can return bytes/str; we normalize in client
+            dep_list = (deps or {}).get('departments') or []
+
+            # Clear selection to avoid FK issues, then rebuild
+            self.hdm_department_id = False
+            self.env['pos.hdm.department'].search([('pos_config_id', '=', self.id)]).unlink()
+
+            vals_list = []
+            for d in dep_list:
+                did = d.get('id')
+                typ = d.get('type')
+                if isinstance(did, str) and did.isdigit():
+                    did = int(did)
+                if isinstance(typ, str) and typ.isdigit():
+                    typ = int(typ)
+                if isinstance(did, int) and did > 0:
+                    vals_list.append({
+                        'pos_config_id': self.id,
+                        'dept_id': did,
+                        'name': d.get('name') or '',
+                        'type': typ or 0,
+                    })
+            if vals_list:
+                created = self.env['pos.hdm.department'].create(vals_list)
+                if len(created) == 1:
+                    self.hdm_department_id = created.id
+
+        except Exception as dep_e:
+            # LOG FIRST (your original code raised first, so warning never ran)
+            _logger.warning('HDM department fetch failed', exc_info=True)
+            raise UserError(_('HDM department fetch failed: %s') % (dep_e,))
+
+    except Exception as e:
+        self.write({
+            'hdm_last_test_ok': False,
+            'hdm_last_test_at': fields.Datetime.now(),
+            'hdm_last_test_message': str(e),
+            'hdm_last_machine_info': json.dumps({'error': str(e)}, ensure_ascii=False),
+        })
+        raise UserError(_('HDM test failed: %s') % (e,))
+

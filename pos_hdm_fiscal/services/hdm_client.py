@@ -37,6 +37,9 @@ class HDMClient:
         self.seq = 0
         self.closed = False
         self._last_receipt = None
+        # Native protocol constants
+        self._HDR_MAGIC = bytes.fromhex('D5 80 D4 B4 D5 84 00')
+        self._PROTO_VER = 0x05
 
     def is_closed(self):
         return self.closed
@@ -105,6 +108,19 @@ class HDMClient:
                     data['ok'] = True
                     return data
                 return {'ok': False, 'message': 'No last receipt data in simulator'}
+            elif op == 'get_ops_deps':
+                return {
+                    'ok': True,
+                    'list': {
+                        'c': [
+                            {'id': 1, 'name': 'Cashier 1', 'deps': [1, 2]},
+                        ],
+                        'd': [
+                            {'id': 1, 'name': 'VAT 20%', 'type': 1},
+                            {'id': 2, 'name': 'Non-VAT', 'type': 3},
+                        ],
+                    },
+                }
             else:
                 return {'ok': False, 'message': 'Unsupported op in simulator'}
 
@@ -200,6 +216,78 @@ class HDMClient:
         if isinstance(last_exc, ConnectionResetError):
             raise Exception("HDM connection was closed by the device. Verify protocol/terminator and credentials.")
         raise Exception(f"HDM communication failed: {last_exc}")
+
+    # ---- Native protocol helpers ----
+    def _enc3des(self, key24: bytes, data: bytes) -> bytes:
+        return DES3.new(key24, DES3.MODE_ECB).encrypt(_pad(data))
+
+    def _dec3des(self, key24: bytes, data: bytes) -> bytes:
+        return _unpad(DES3.new(key24, DES3.MODE_ECB).decrypt(data))
+
+    def _recv_all(self, s: socket.socket, nbytes: int, timeout: float = 10.0) -> bytes:
+        s.settimeout(timeout)
+        parts = []
+        got = 0
+        while got < nbytes:
+            chunk = s.recv(nbytes - got)
+            if not chunk:
+                break
+            parts.append(chunk)
+            got += len(chunk)
+        return b''.join(parts)
+
+    def _send_proto(self, ip, port, func_code: int, body: dict, key24: bytes) -> dict:
+        payload = json.dumps(body or {}, ensure_ascii=False).encode('utf-8')
+        enc = self._enc3des(key24, payload)
+        length = len(enc)
+        header = bytearray()
+        header += self._HDR_MAGIC
+        header.append(self._PROTO_VER)
+        header.append(func_code & 0xFF)
+        header += bytes([(length >> 8) & 0xFF, length & 0xFF])
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.settimeout(10)
+            s.connect((ip, port))
+            s.sendall(header + enc)
+            # Response header (11 bytes)
+            rh = self._recv_all(s, 11)
+            if len(rh) < 11:
+                raise Exception('Short HDM response header')
+            resp_len = (rh[9] << 8) | rh[10]
+            body_enc = b''
+            if resp_len:
+                body_enc = self._recv_all(s, resp_len)
+            if not body_enc:
+                # ACK only
+                return {'ok': True, 'ack': True}
+            try:
+                dec = self._dec3des(key24, body_enc)
+                txt = dec.decode('utf-8', errors='ignore').strip()
+                return json.loads(txt) if txt else {'ok': True}
+            except Exception as e:
+                raise Exception(f'Failed to decrypt/parse HDM response: {e}')
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+    def get_ops_deps(self, config):
+        """Fetch operators and departments via native protocol (first key)."""
+        key = _derive_2key_3des(config.hdm_password or '')
+        try:
+            fc = int(getattr(config, 'hdm_fc_get_ops_deps', None) or 1)
+        except Exception:
+            fc = 1
+        resp = self._send_proto(config.hdm_ip, config.hdm_port, fc, {'password': config.hdm_password or ''}, key)
+        if not isinstance(resp, dict):
+            raise Exception('Invalid response (not a dict)')
+        lst = resp.get('list') or {}
+        return {
+            'operators': lst.get('c') or [],
+            'departments': lst.get('d') or [],
+        }
 
     def get_ops_deps(self, config):
         """Fetch list of HDM operators and departments (best effort).
