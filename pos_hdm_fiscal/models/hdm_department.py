@@ -12,7 +12,7 @@ class PosHDMDepartment(models.Model):
     name = fields.Char(string='Name')
     type = fields.Integer(string='Type')
 
-    _sql_constraints = [
-        ('pos_dept_unique', 'unique(pos_config_id, dept_id)', 'Department already exists for this POS.'),
-    ]
+    # _sql_constraints = [
+    #     ('pos_dept_unique', 'unique(pos_config_id, dept_id)', 'Department already exists for this POS.'),
+    # ]
 
