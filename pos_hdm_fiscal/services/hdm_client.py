@@ -438,6 +438,7 @@ class HDMClient:
                     'crn': details.get('crn'),
                     'qr_base64': b64encode(qr_txt.encode('utf-8')).decode('ascii') if qr_txt else None,
                 }
+            return {'ok': True, 'details': details}
         except Exception as e:
             return {'ok': False, 'message': str(e)}
         return {'ok': True, 'message': 'Receipt printed, but no fiscal data returned'}
