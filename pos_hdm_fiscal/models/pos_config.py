@@ -90,12 +90,7 @@ class PosConfig(models.Model):
                     if len(created) == 1:
                         self.hdm_department_id = created.id
             except Exception as dep_e:
-                self.env['pos.hdm.department'].create({
-                            'pos_config_id': self.id,
-                            'dept_id': 0,
-                            'name': f"{dep_e}",
-                            'type': 0,
-                        })
+                raise UserError(_('HDM department fetch failed: %s') % (dep_e,))
                 _logger.warning('HDM department fetch failed: %s', dep_e)
         except Exception as e:
             # Persist failure details
