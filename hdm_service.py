@@ -84,16 +84,7 @@ def _derive_key1(password: str) -> bytes:
 def _cipher_ecb(key24: bytes) -> DES3:
     return DES3.new(key24, DES3.MODE_ECB)
 
-# def _pack_request(function_code: int, enc_body: bytes) -> bytes:
-#     # Request header should be 12 bytes total
-#     header = bytearray()
-#     header += HDM_MAGIC                    # 7 bytes
-#     header.append(PROTO_VERSION)           # 1 byte
-#     header.append(function_code & 0xFF)    # 1 byte
-#     header += len(enc_body).to_bytes(2, "big")  # 2 bytes
-#     header.append(0x00)                    # reserved / filler (1 byte!)
-#     return bytes(header) + enc_body
-def _pack_request(self, func_code: int, enc_body: bytes) -> bytes:
+def _pack_request(func_code: int, enc_body: bytes) -> bytes:
     header = bytearray()
     header += HDM_MAGIC                  # 7 bytes
     header.append(0x00)                  # proto version (try 0x00 instead of 0x05)
@@ -103,17 +94,17 @@ def _pack_request(self, func_code: int, enc_body: bytes) -> bytes:
     return bytes(header) + enc_body
 
 
-def _parse_response_header(hdr: bytes) -> Tuple[int, int, int, int]:
-    # Response header (spec sample): byte1=0x00, byte2=protocol, bytes3–6=program ver, 7–8=response code, 9–10=length (BE). :contentReference[oaicite:11]{index=11}
-    if len(hdr) < 10:
-        raise HDMError(103, "Response header too short", {"raw": hdr.hex()})
-    proto = hdr[1]
-    prog_ver = int.from_bytes(hdr[2:6], "big")
-    resp_code_be = int.from_bytes(hdr[6:8], "big")
-    body_len_be = int.from_bytes(hdr[8:10], "big")
-    # Many devices actually encode the *code value* little-endian inside those two bytes.
-    resp_code_le = int.from_bytes(hdr[6:8], "little")
-    return proto, prog_ver, resp_code_be, body_len_be if body_len_be else 0
+# def _parse_response_header(hdr: bytes) -> Tuple[int, int, int, int]:
+#     # Response header (spec sample): byte1=0x00, byte2=protocol, bytes3–6=program ver, 7–8=response code, 9–10=length (BE). :contentReference[oaicite:11]{index=11}
+#     if len(hdr) < 10:
+#         raise HDMError(103, "Response header too short", {"raw": hdr.hex()})
+#     proto = hdr[1]
+#     prog_ver = int.from_bytes(hdr[2:6], "big")
+#     resp_code_be = int.from_bytes(hdr[6:8], "big")
+#     body_len_be = int.from_bytes(hdr[8:10], "big")
+#     # Many devices actually encode the *code value* little-endian inside those two bytes.
+#     resp_code_le = int.from_bytes(hdr[6:8], "little")
+#     return proto, prog_ver, resp_code_be, body_len_be if body_len_be else 0
 
 class HDMClient:
     """
@@ -136,19 +127,6 @@ class HDMClient:
         self._session_key: Optional[bytes] = None
 
     # ---------- low-level I/O ----------
-
-    # def _send_recv(self, request: bytes) -> Tuple[bytes, bytes]:
-    #     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    #         s.settimeout(self.timeout)
-    #         s.connect((self.host, self.port))
-    #         s.sendall(request)
-    #         hdr = self._recvn(s, 10)
-    #         proto, prog, resp_code_be, body_len = _parse_response_header(hdr)
-    #         if self.debug:
-    #             print(f"[DEBUG] RespHdr hex={hdr.hex().upper()} Proto={proto}, ProgVer={prog:08X}, "
-    #                   f"RespCodeBE={resp_code_be}, BodyLen={body_len}, Total={len(hdr)}")
-    #         body = self._recvn(s, body_len) if body_len else b""
-    #         return hdr, body
 
     def _parse_resp_header(self, hdr: bytes):
         # hdr is 12 bytes
