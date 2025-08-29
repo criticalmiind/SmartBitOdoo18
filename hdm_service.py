@@ -161,7 +161,6 @@ class HDMClient:
             f"RespCode={resp_code}, BodyLen={body_len}, Reserved={reserved}")
         return resp_code, body_len, progver
 
-    @staticmethod
     def _send_recv(self, frame: bytes) -> Tuple[bytes, bytes]:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(10)
