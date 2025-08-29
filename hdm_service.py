@@ -1,26 +1,26 @@
 # hdm_service.py
-# Reusable HDM (Fiscal Register) client.
-#
-# Implements TCP framing + 3DES(ECB, PKCS7) per spec, two-key scheme,
-# sequence numbers, response header parsing, and high-level calls.
-#
-# Spec references:
-# - Request/response headers & protocol v=0x05, function code byte, length (BE). :contentReference[oaicite:4]{index=4}
-# - 3DES key #1 = first 24 bytes of SHA-256(password); key #2 = session key from Login. :contentReference[oaicite:5]{index=5}
-# - Functions list & JSON bodies (operators+deps, login, logout, print, reports, etc.). :contentReference[oaicite:6]{index=6}
-# - Error codes table (e.g., 200 OK; 4xx/5xx/errors 101..196). :contentReference[oaicite:7]{index=7}
+# Reusable HDM (Fiscal Register) client with robust TLS/protocol fallbacks.
+# - TCP framing: magic(7) + proto(1) + fcode(1) + len(2, BE) + reserved(1) + enc_body
+# - Crypto: 3DES-ECB, PKCS7, key1 = first 24 bytes of SHA-256(password), key2 = session key from Login (24 bytes b64)
+# - Response header: 12 bytes; code in bytes 6..7 (devices often encode little-endian)
 
-import socket, json, base64, hashlib, threading, time, ssl
+import socket
+import json
+import base64
+import hashlib
+import threading
+import time
+import ssl
 from typing import Any, Dict, List, Optional, Tuple
+
 from Crypto.Cipher import DES3
 from Crypto.Util.Padding import pad, unpad
 
+# ---- constants / tables ----
 
-HDM_MAGIC = bytes.fromhex("D580D4B4D58400")  # bytes 1–7 “HDM text as indicator” :contentReference[oaicite:8]{index=8}
-PROTO_VERSION = 0x05
+HDM_MAGIC = bytes.fromhex("D580D4B4D58400")  # 7 bytes
+PROTO_VERSION_DEFAULT = 0x05                 # many devices prefer 0x05; some require 0x00
 
-# Known/documented functions (the spec lists them but does not number them explicitly in the excerpt.
-# These codes are a conventional mapping used in the field; adjust if your vendor assigns different IDs.)
 FCODE = {
     "GET_OPERATORS_AND_DEPS": 0x01,
     "LOGIN": 0x02,
@@ -40,17 +40,16 @@ FCODE = {
     "CHECK_EMARK": 0x10,
 }
 
-# Error-code names for friendlier messages (subset; extend as needed). :contentReference[oaicite:9]{index=9}
 ERROR_NAMES = {
     200: "OK",
     400: "Request error",
     402: "Unsupported protocol version",
-    403: "Access denied (IP/password mismatch or not in Integration Mode)",
+    403: "Access denied (IP allowlist/Integration Mode/Password)",
     404: "Invalid function code",
     500: "Internal error",
     101: "Login password error",
-    102: "Session key encoding error",
-    103: "Header format error",
+    102: "Session key encoding / missing",
+    103: "Header / framing error",
     104: "Sequence number error",
     105: "JSON formatting error",
     141: "Last receipt record missing",
@@ -58,11 +57,10 @@ ERROR_NAMES = {
     143: "Printer general error",
     144: "Printer initialization error",
     145: "Printer is out of paper",
-    151: "No such department / operator not assigned to department",
+    151: "No such department / operator not assigned",
     191: "Cash in/out amount must be > 0",
     193: "Buyer TIN format incorrect",
     195: "eMark code format error",
-    # ... add the rest if useful for your workflows ...
 }
 
 class HDMError(Exception):
@@ -73,24 +71,29 @@ class HDMError(Exception):
 
 def _derive_key1(password: str) -> bytes:
     digest = hashlib.sha256(password.encode("utf-8")).digest()
-    key = digest[:24]
-    # PyCryptodome needs a “DES3.adjust_key_parity”; but for keys from a hash, parity is acceptable in practice.
-    return DES3.adjust_key_parity(key)
+    key = DES3.adjust_key_parity(digest[:24])
+    return key
 
 def _cipher_ecb(key24: bytes) -> DES3:
     return DES3.new(key24, DES3.MODE_ECB)
 
+# ---- client ----
 
 class HDMClient:
+    """
+    Thread-safe-ish HDM client with automatic transport/protocol fallbacks.
+    """
     def __init__(self, host: str, port: int, password: str,
                  debug: bool = True, timeout: float = 10.0,
-                 proto_version: int = PROTO_VERSION,
+                 proto_version: int = PROTO_VERSION_DEFAULT,
                  use_tls: bool = False, tls_verify: bool = True):
         self.host = host
         self.port = port
         self.password = password
-        self.timeout = timeout
         self.debug = debug
+        self.timeout = timeout
+
+        # preferred settings (will update if fallback finds a working combo)
         self.proto_version = proto_version
         self.use_tls = use_tls
         self.tls_verify = tls_verify
@@ -100,6 +103,40 @@ class HDMClient:
         self._key1 = _derive_key1(password)
         self._session_key: Optional[bytes] = None
 
+    # ---------- debug helpers ----------
+
+    def _dprint(self, msg: str):
+        if self.debug:
+            print(f"[DEBUG] {msg}")
+
+    # ---------- header / framing ----------
+
+    def _build_frame(self, func_code: int, enc_body: bytes, proto_version: int) -> bytes:
+        header = bytearray()
+        header += HDM_MAGIC                      # 7
+        header.append(proto_version & 0xFF)      # 1
+        header.append(func_code & 0xFF)          # 1
+        header += len(enc_body).to_bytes(2, "big")  # 2
+        header.append(0x00)                      # 1 (reserved)
+        return bytes(header) + enc_body
+
+    def _parse_resp_header(self, hdr: bytes) -> Tuple[int, int, bytes]:
+        if len(hdr) != 12:
+            raise HDMError(103, f"Response header length != 12 (got {len(hdr)})",
+                           {"raw": hdr.hex().upper()})
+        proto = hdr[1]
+        progver = hdr[2:6]
+        # Many devices encode code little-endian in 6..7:
+        code_le = int.from_bytes(hdr[6:8], "little")
+        code_be = int.from_bytes(hdr[6:8], "big")
+        body_len = int.from_bytes(hdr[8:10], "big")
+        reserved = hdr[10]
+
+        self._dprint(f"RespHdr={hdr.hex().upper()} Proto={proto} CodeLE={code_le} CodeBE={code_be} "
+                     f"BodyLen={body_len} Reserved={reserved}")
+        code = code_le or code_be
+        return code, body_len, progver
+
     @staticmethod
     def _recvn(sock: socket.socket, n: int) -> bytes:
         buf = b""
@@ -110,18 +147,9 @@ class HDMClient:
             buf += chunk
         return buf
 
-    def _pack_request(self, func_code: int, enc_body: bytes) -> bytes:
-        header = bytearray()
-        header += HDM_MAGIC                 # 7 bytes
-        header.append(self.proto_version)   # 1 byte (try 0x00 if 0x05 resets)
-        header.append(func_code & 0xFF)     # 1 byte
-        header += len(enc_body).to_bytes(2, "big")  # 2 bytes
-        header.append(0x00)                 # 1 byte reserved
-        return bytes(header) + enc_body
-
-    def _open_socket(self) -> socket.socket:
+    def _open_socket(self, use_tls: bool) -> socket.socket:
         raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
-        if not self.use_tls:
+        if not use_tls:
             return raw
         ctx = ssl.create_default_context()
         if not self.tls_verify:
@@ -129,73 +157,6 @@ class HDMClient:
             ctx.verify_mode = ssl.CERT_NONE
         return ctx.wrap_socket(raw, server_hostname=self.host)
 
-    def _send_recv(self, frame: bytes) -> Tuple[bytes, bytes]:
-        last_err = None
-        tried_tls_upgrade = False
-        for attempt in range(1, 3):  # 2 tries: current mode, then maybe TLS upgrade
-            try:
-                with self._open_socket() as s:
-                    s.settimeout(self.timeout)
-                    if self.debug:
-                        mode = "TLS" if self.use_tls else "plain"
-                        print(f"[DEBUG] TCP connected to {self.host}:{self.port} ({mode}, attempt {attempt})")
-                    s.sendall(frame)
-                    hdr = self._recvn(s, 12)  # response header is 12 bytes
-                    resp_code, body_len, _ = self._parse_resp_header(hdr)
-                    enc_body = self._recvn(s, body_len) if body_len > 0 else b""
-                    return hdr, enc_body
-
-            except ConnectionResetError as e:
-                last_err = e
-                if self.debug:
-                    print(f"[DEBUG] Connection reset by peer (attempt {attempt}): {e}")
-                # If we were in plaintext, try upgrading to TLS once
-                if not self.use_tls and not tried_tls_upgrade:
-                    if self.debug: print("[DEBUG] Retrying with TLS (server may require TLS).")
-                    self.use_tls = True
-                    tried_tls_upgrade = True
-                    continue
-                raise HDMError(400, f"TCP error reaching {self.host}:{self.port}: {e}")
-
-            except socket.timeout as e:
-                last_err = e
-                if self.debug:
-                    print(f"[DEBUG] Timeout (attempt {attempt}): {e}")
-
-            except (ConnectionRefusedError, OSError) as e:
-                raise HDMError(400, f"TCP error reaching {self.host}:{self.port}: {e}")
-
-            time.sleep(0.3)
-
-        raise HDMError(
-            400,
-            f"Timeout/Reset contacting {self.host}:{self.port}. "
-            "Check TLS requirement, protocol version, Integration mode, or allow-list.",
-            {"last_error": str(last_err)}
-        )
-
-    # ... keep the rest of your class as-is ...
-
-    @staticmethod
-    def _recvn(sock: socket.socket, n: int) -> bytes:
-        buf = b""
-        while len(buf) < n:
-            chunk = sock.recv(n - len(buf))
-            if not chunk:
-                raise HDMError(103, f"Socket closed while expecting {n} bytes")
-            buf += chunk
-        return buf
-
-    @staticmethod
-    def _pack_request(func_code: int, enc_body: bytes) -> bytes:
-        header = bytearray()
-        header += HDM_MAGIC
-        header.append(PROTO_VERSION)
-        header.append(func_code & 0xFF)
-        header += len(enc_body).to_bytes(2, "big")
-        header.append(0x00)
-        return bytes(header) + enc_body
-    
     # ---------- crypto helpers ----------
 
     def _encrypt(self, payload: Dict[str, Any], use_session: bool) -> bytes:
@@ -204,9 +165,7 @@ class HDMClient:
         if not key:
             raise HDMError(102, "Missing session key; call login() first")
         enc = _cipher_ecb(key).encrypt(pad(data, 8))
-        if self.debug:
-            # show header+enc data length only; avoid logging secrets in production
-            print(f"[DEBUG] JSON->enc bytes={len(enc)}")
+        self._dprint(f"JSON->enc bytes={len(enc)}")
         return enc
 
     def _decrypt(self, enc_data: bytes, use_session: bool) -> Dict[str, Any]:
@@ -220,81 +179,100 @@ class HDMClient:
         with self._lock:
             self._seq += 1
             return self._seq
-    
-    # ---------- request call ----------
+
+    # ---------- core call with fallbacks ----------
+
+    def _alt_proto(self, p: int) -> int:
+        return 0x00 if p != 0x00 else 0x05
 
     def _call(self, fcode: int, body: Optional[Dict[str, Any]], use_session: bool) -> Dict[str, Any]:
         enc = self._encrypt(body or {}, use_session)
-        req = self._pack_request(fcode, enc)   # ← call the staticmethod
 
-        if self.debug:
-            print(f"[DEBUG] Request hex (header+enc): {req.hex().upper()}")
-        hdr, enc_body = self._send_recv(frame=req)
+        # Build a fallback matrix: (use_tls, proto)
+        preferred = (self.use_tls, self.proto_version)
+        alt = (self.use_tls, self._alt_proto(self.proto_version))
+        swap_tls = (not self.use_tls, self.proto_version)
+        swap_both = (not self.use_tls, self._alt_proto(self.proto_version))
 
-        proto = hdr[1]
-        if proto not in (0, PROTO_VERSION):
-            raise HDMError(402, f"Unsupported protocol version {proto}, expected {PROTO_VERSION} or 0")
+        tried = []
+        last_err: Optional[Exception] = None
 
-        # proto = hdr[1]
-        # if proto != PROTO_VERSION:
-        #     raise HDMError(402, f"Unsupported protocol version {proto}, expected {PROTO_VERSION}")
+        for use_tls, proto in [preferred, alt, swap_tls, swap_both]:
+            if (use_tls, proto) in tried:
+                continue
+            tried.append((use_tls, proto))
 
-        resp_code_be = int.from_bytes(hdr[6:8], "big")
-        resp_code_le = int.from_bytes(hdr[6:8], "little")
-        code = resp_code_le or resp_code_be  # prefer LE if present (common device quirk)
+            frame = self._build_frame(fcode, enc, proto)
+            self._dprint(f"Request hex (header+enc): {frame.hex().upper()}")
 
-        # If there is no body and code != 200, surface a clear diagnostic.
-        if code != 200 and len(enc_body) == 0:
-            name = ERROR_NAMES.get(code, "Unknown error")
-            raise HDMError(code, f"HDM error ({name}); empty body. "
-                                 f"Check Integration Mode/IP allowlist/password/function code.")
+            try:
+                with self._open_socket(use_tls) as s:
+                    mode = "TLS" if use_tls else "plain"
+                    self._dprint(f"TCP connected to {self.host}:{self.port} ({mode}, proto=0x{proto:02X})")
+                    s.settimeout(self.timeout)
 
-        # When OK but empty body, return {}.
-        if code == 200 and len(enc_body) == 0:
-            return {}
+                    s.sendall(frame)
+                    hdr = self._recvn(s, 12)
+                    code, body_len, _ = self._parse_resp_header(hdr)
+                    enc_body = self._recvn(s, body_len) if body_len > 0 else b""
 
-        resp = self._decrypt(enc_body, use_session)
-        # Devices may also put "code" in body—trust header first.
-        if code != 200:
-            name = ERROR_NAMES.get(code, "Unknown error")
-            raise HDMError(code, f"HDM error ({name})", {"response": resp})
-        return resp
+                    # if no body and not OK:
+                    if code != 200 and not enc_body:
+                        name = ERROR_NAMES.get(code, "Unknown error")
+                        raise HDMError(code, f"HDM error ({name}); empty body.")
+
+                    # decrypt (session or first-key)
+                    resp = self._decrypt(enc_body, use_session)
+
+                    if code != 200:
+                        name = ERROR_NAMES.get(code, "Unknown error")
+                        raise HDMError(code, f"HDM error ({name})", {"response": resp})
+
+                    # lock in the working combo
+                    self.use_tls = use_tls
+                    self.proto_version = proto
+                    return resp
+
+            except (ConnectionResetError, socket.timeout, OSError, HDMError) as e:
+                last_err = e
+                self._dprint(f"Attempt with tls={use_tls}, proto=0x{proto:02X} failed: {e}")
+                # Try next combination
+                time.sleep(0.2)
+                continue
+
+        # If we got here, all combinations failed
+        if isinstance(last_err, HDMError):
+            raise last_err
+        raise HDMError(400, f"Unable to reach/handshake with {self.host}:{self.port}. "
+                            f"Tried TLS/plain and proto 0x00/0x05. "
+                            f"Check Integration Mode, IP allowlist, correct port, and TLS requirement.",
+                       {"last_error": str(last_err) if last_err else None})
 
     # ---------- high-level API ----------
 
-    # First-key functions (no session):
     def get_operators_and_departments(self) -> Dict[str, Any]:
-        """
-        Response fields:
-          c: list of operators [{id, name, deps: [deptIds]}]
-          d: list of departments [{id, name, type}]  (type = tax type)  :contentReference[oaicite:15]{index=15}
-        """
-        # Per spec: request body = {"password": "<HDM password>"}  (no seq here) :contentReference[oaicite:16]{index=16}
+        # Body for first-key calls typically includes the plain password
+        # (encrypted with key1 derived from that same password).
         body = {"password": self.password}
         return self._call(FCODE["GET_OPERATORS_AND_DEPS"], body, use_session=False)
 
-    def login(self, cashier_id: int, pin: str) -> None:
-        """
-        On success the device returns {"key": "<base64 24-byte session key>"}; we store it. :contentReference[oaicite:17]{index=17}
-        """
-        body = {"password": self.password, "cashier": cashier_id, "pin": str(pin)}
+    def login(self, cashier_id: int, pin: str) -> bytes:
+        body = {"password": self.password, "cashier": int(cashier_id), "pin": str(pin)}
         resp = self._call(FCODE["LOGIN"], body, use_session=False)
         b64 = resp.get("key")
         if not b64:
-            raise HDMError(102, "Login succeeded but no session key returned", resp)
+            raise HDMError(102, "Login succeeded but no session key in body", resp)
         raw = base64.b64decode(b64)
         if len(raw) != 24:
             raise HDMError(102, f"Session key length != 24 (got {len(raw)})")
         self._session_key = DES3.adjust_key_parity(raw)
         return raw
 
-    # Session-key functions (seq required by spec). :contentReference[oaicite:18]{index=18}
     def logout(self) -> Dict[str, Any]:
         body = {"seq": self._next_seq()}
         return self._call(FCODE["LOGOUT"], body, use_session=True)
 
     def get_device_time(self) -> Dict[str, Any]:
-        # Response: {"dt": "YYYY-MM-DD ..."} per spec. :contentReference[oaicite:19]{index=19}
         body = {"seq": self._next_seq()}
         return self._call(FCODE["GET_DEVICE_TIME"], body, use_session=True)
 
@@ -304,43 +282,34 @@ class HDMClient:
                      transaction_type_id: Optional[int] = None,
                      start_date: Optional[int] = None,
                      end_date: Optional[int] = None) -> Dict[str, Any]:
-        """
-        X/Z etc. report; provide one optional filter at a time. :contentReference[oaicite:20]{index=20}
-        """
-        body = {"seq": self._next_seq(), "reportType": report_type}
+        body = {"seq": self._next_seq(), "reportType": int(report_type)}
         if dept_id is not None:
-            body["deptId"] = dept_id
+            body["deptId"] = int(dept_id)
         elif cashier_id is not None:
-            body["cashierId"] = cashier_id
+            body["cashierId"] = int(cashier_id)
         elif transaction_type_id is not None:
-            body["transactionTypeId"] = transaction_type_id
+            body["transactionTypeId"] = int(transaction_type_id)
         if start_date is not None:
-            body["startDate"] = start_date
+            body["startDate"] = int(start_date)
         if end_date is not None:
-            body["endDate"] = end_date
+            body["endDate"] = int(end_date)
         return self._call(FCODE["PRINT_REPORT"], body, use_session=True)
 
     def list_payment_systems(self) -> Dict[str, Any]:
-        # Response: {"PaymentSystems":[{"code":1,"name":"Cash"},...]} :contentReference[oaicite:21]{index=21}
         body = {"seq": self._next_seq()}
         return self._call(FCODE["LIST_PAYMENT_SYSTEMS"], body, use_session=True)
 
-    def cash_in_out(self, amount: float, is_cashin: bool, cashier_id: Optional[int] = None,
+    def cash_in_out(self, amount: float, is_cashin: bool,
+                    cashier_id: Optional[int] = None,
                     description: Optional[str] = None) -> Dict[str, Any]:
-        # Cash operations (session) per spec. :contentReference[oaicite:22]{index=22}
         body = {"seq": self._next_seq(), "amount": float(amount), "isCashin": bool(is_cashin)}
         if cashier_id is not None:
             body["cashierid"] = int(cashier_id)
         if description:
-            body["description"] = description
+            body["description"] = str(description)
         return self._call(FCODE["CASH_IN_OUT"], body, use_session=True)
 
-    # Receipt-related (abbreviated; the spec includes full field list & examples). :contentReference[oaicite:23]{index=23} :contentReference[oaicite:24]{index=24}
     def print_receipt(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        payload must already include the documented fields (mode/dep/items, payment amounts, etc.)
-        We add/override the required 'seq'.
-        """
         body = dict(payload)
         body["seq"] = self._next_seq()
         return self._call(FCODE["PRINT_RECEIPT"], body, use_session=True)
@@ -350,25 +319,19 @@ class HDMClient:
         return self._call(FCODE["PRINT_LAST_COPY"], body, use_session=True)
 
     def print_return(self, crn: str, receipt_id: str) -> Dict[str, Any]:
-        body = {"seq": self._next_seq(), "crn": crn, "receiptId": str(receipt_id)}
+        body = {"seq": self._next_seq(), "crn": str(crn), "receiptId": str(receipt_id)}
         return self._call(FCODE["PRINT_RETURN"], body, use_session=True)
 
     def get_receipt_info(self, **kwargs) -> Dict[str, Any]:
-        """
-        Wrapper over 4.5.7 Get Receipt Information (supports partial return context). :contentReference[oaicite:25]{index=25}
-        Caller passes any allowed fields; we inject seq.
-        """
         body = dict(kwargs)
         body["seq"] = self._next_seq()
         return self._call(FCODE["GET_RECEIPT_INFO"], body, use_session=True)
 
     def set_header_footer(self, headers: List[Dict[str, Any]], footers: List[Dict[str, Any]]) -> Dict[str, Any]:
-        # Header/footer formatting options per spec. :contentReference[oaicite:26]{index=26}
         body = {"seq": self._next_seq(), "headers": headers, "footers": footers}
         return self._call(FCODE["SET_HEADER_FOOTER"], body, use_session=True)
 
     def set_header_logo(self, base64_bitmap: str) -> Dict[str, Any]:
-        # Bitmap ≤ 4-bit colors, base64. :contentReference[oaicite:27]{index=27}
         body = {"seq": self._next_seq(), "headerLogo": base64_bitmap}
         return self._call(FCODE["SET_HEADER_LOGO"], body, use_session=True)
 
@@ -377,6 +340,5 @@ class HDMClient:
         return self._call(FCODE["SYNC"], body, use_session=True)
 
     def check_emark(self, emark: str) -> Dict[str, Any]:
-        # eMark rules (length, ASCII set, escaping) in spec. :contentReference[oaicite:28]{index=28}
-        body = {"seq": self._next_seq(), "eMark": emark}
+        body = {"seq": self._next_seq(), "eMark": str(emark)}
         return self._call(FCODE["CHECK_EMARK"], body, use_session=True)
