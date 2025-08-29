@@ -12,7 +12,17 @@ CASHIER_ID = 3
 CASHIER_PIN = "4321"
 
 def main():
-    client = HDMClient(HDM_IP, HDM_PORT, HDM_PASSWORD, debug=True)
+    # client = HDMClient(HDM_IP, HDM_PORT, HDM_PASSWORD, debug=True)
+    client = HDMClient(
+        HDM_IP, HDM_PORT, HDM_PASSWORD,
+        debug=True,
+        timeout=30.0,
+        proto_version=0x00,  # ← try 0x00 first; if it still resets, also try 0x05
+        use_tls=False,       # ← start plaintext; code will auto-upgrade to TLS on reset
+        tls_verify=False     # ← set True if the device has a proper cert
+    )
+
+
 
     # 1) Read operators & departments (first key – no login required)
     try:
