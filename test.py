@@ -24,12 +24,15 @@ INDEX_HTML = r"""<!doctype html>
   <title>HDM Client (Browser + Python Bridge)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <!-- CryptoJS for TripleDES/SHA256 -->
-  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/core.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/enc-utf8.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/sha256.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/tripledes.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/mode-ecb.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/pad-pkcs7.min.js"></script>
+  <!-- CryptoJS core + deps (required for 3DES) -->
+    <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/core.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/enc-utf8.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/cipher-core.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/sha256.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/des.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/tripledes.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/mode-ecb.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/pad-pkcs7.min.js"></script>
   <style>
     :root { color-scheme: dark; }
     body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; background:#0b1020; color:#e5e7eb }
@@ -92,6 +95,7 @@ INDEX_HTML = r"""<!doctype html>
   </main>
 
 <script>
+
 /* ======== Utils ======== */
 const logEl = document.getElementById('log');
 function log(msg, cls='') {
@@ -213,7 +217,7 @@ async function callHDM(fcode, payload, useSession){
   const key = useSession ? sessionKey : deriveKey1(f.password);
   if(useSession && !sessionKey) throw new Error("Missing session key; login first.");
   const enc = enc3DES(JSON.stringify(payload||{}), key);
-  const frame = buildFrame(f.proto, enc, f.proto); // proto used in header byte
+  const frame = buildFrame(fcode, enc, f.proto);   // ✅ funcCode, encBody, proto
   log(`→ frame[0..11]= ${Array.from(frame.slice(0,12)).map(x=>x.toString(16).padStart(2,'0')).join('').toUpperCase()}`);
   const {hdr, body} = await sendRPC({ip:f.ip,port:f.port,useTLS:f.useTLS,timeout:f.timeout,frameU8:frame});
   const {proto, code, bodyLen} = parseHeader(hdr);
