@@ -9,7 +9,7 @@ HDM_PORT = 8123               # <-- set to your HDM Port
 HDM_PASSWORD = "krLGfzRh"     # <-- fiscal registration password
 
 CASHIER_ID = 3
-CASHIER_PIN = "3"
+CASHIER_PIN = "4321"
 
 def main():
     client = HDMClient(HDM_IP, HDM_PORT, HDM_PASSWORD, debug=True)
