@@ -137,19 +137,19 @@ class HDMClient:
 
     # ---------- low-level I/O ----------
 
-    def _send_recv(self, request: bytes) -> Tuple[bytes, bytes]:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(self.timeout)
-            s.connect((self.host, self.port))
-            s.sendall(request)
-            hdr = self._recvn(s, 10)
-            proto, prog, resp_code_be, body_len = _parse_response_header(hdr)
-            if self.debug:
-                print(f"[DEBUG] RespHdr hex={hdr.hex().upper()} Proto={proto}, ProgVer={prog:08X}, "
-                      f"RespCodeBE={resp_code_be}, BodyLen={body_len}, Total={len(hdr)}")
-            body = self._recvn(s, body_len) if body_len else b""
-            return hdr, body
-    
+    # def _send_recv(self, request: bytes) -> Tuple[bytes, bytes]:
+    #     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    #         s.settimeout(self.timeout)
+    #         s.connect((self.host, self.port))
+    #         s.sendall(request)
+    #         hdr = self._recvn(s, 10)
+    #         proto, prog, resp_code_be, body_len = _parse_response_header(hdr)
+    #         if self.debug:
+    #             print(f"[DEBUG] RespHdr hex={hdr.hex().upper()} Proto={proto}, ProgVer={prog:08X}, "
+    #                   f"RespCodeBE={resp_code_be}, BodyLen={body_len}, Total={len(hdr)}")
+    #         body = self._recvn(s, body_len) if body_len else b""
+    #         return hdr, body
+
     def _parse_resp_header(self, hdr: bytes):
         # hdr is 12 bytes
         proto = hdr[1]
@@ -178,14 +178,16 @@ class HDMClient:
                 enc_body = self._recvn(s, body_len)
 
             return hdr, enc_body
-    # def _recvn(sock: socket.socket, n: int) -> bytes:
-    #     buf = b""
-    #     while len(buf) < n:
-    #         chunk = sock.recv(n - len(buf))
-    #         if not chunk:
-    #             raise HDMError(103, f"Socket closed while expecting {n} bytes")
-    #         buf += chunk
-    #     return buf
+
+    @staticmethod
+    def _recvn(sock: socket.socket, n: int) -> bytes:
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise HDMError(103, f"Socket closed while expecting {n} bytes")
+            buf += chunk
+        return buf
 
     # ---------- crypto helpers ----------
 
