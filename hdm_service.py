@@ -103,7 +103,6 @@ def _pack_request(function_code: int, enc_body: bytes) -> bytes:
     header.append(0x00)                    # reserved / filler (1 byte!)
     return bytes(header) + enc_body
 
-
 def _parse_response_header(hdr: bytes) -> Tuple[int, int, int, int]:
     # Response header (spec sample): byte1=0x00, byte2=protocol, bytes3–6=program ver, 7–8=response code, 9–10=length (BE). :contentReference[oaicite:11]{index=11}
     if len(hdr) < 10:
