@@ -114,7 +114,7 @@ class HDMClient:
     - Session key = from LOGIN response (Base64 24 bytes), used for the rest. :contentReference[oaicite:13]{index=13}
     - Each request includes monotonically increasing 'seq' (server enforces > last). :contentReference[oaicite:14]{index=14}
     """
-    def __init__(self, host: str, port: int, password: str, debug: bool = True, timeout: float = 8.0):
+    def __init__(self, host: str, port: int, password: str, debug: bool = True, timeout: float = 10.0):
         self.host = host
         self.port = port
         self.password = password
