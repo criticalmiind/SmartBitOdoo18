@@ -22,7 +22,8 @@ from Crypto.Cipher import DES3
 from Crypto.Util.Padding import pad, unpad
 
 HDM_MAGIC = bytes.fromhex("D580D4B4D58400")  # bytes 1–7 “HDM text as indicator” :contentReference[oaicite:8]{index=8}
-PROTO_VERSION = 0x05
+PROTO_VERSION = 0x00
+# 0x05
 
 # Known/documented functions (the spec lists them but does not number them explicitly in the excerpt.
 # These codes are a conventional mapping used in the field; adjust if your vendor assigns different IDs.)
