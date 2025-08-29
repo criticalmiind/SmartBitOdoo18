@@ -2,9 +2,11 @@
 from hdm_service import HDMClient, HDMError
 
 # Your machine details
-HDM_IP = "10.254.7.228"
-HDM_PORT = 8123
-HDM_PASSWORD = "4bj0ihkw"
+
+# # --------- YOUR CONNECTION / AUTH ---------
+HDM_IP = "123.123.123.14"     # <-- set to your HDM IP
+HDM_PORT = 8123               # <-- set to your HDM Port
+HDM_PASSWORD = "krLGfzRh"     # <-- fiscal registration password
 
 CASHIER_ID = 3
 CASHIER_PIN = "3"
