@@ -10,20 +10,14 @@
 # - Functions list & JSON bodies (operators+deps, login, logout, print, reports, etc.). :contentReference[oaicite:6]{index=6}
 # - Error codes table (e.g., 200 OK; 4xx/5xx/errors 101..196). :contentReference[oaicite:7]{index=7}
 
-import socket
-import time
-import json
-import base64
-import hashlib
-import threading
+import socket, json, base64, hashlib, threading, time, ssl
 from typing import Any, Dict, List, Optional, Tuple
-
 from Crypto.Cipher import DES3
 from Crypto.Util.Padding import pad, unpad
 
+
 HDM_MAGIC = bytes.fromhex("D580D4B4D58400")  # bytes 1–7 “HDM text as indicator” :contentReference[oaicite:8]{index=8}
-PROTO_VERSION = 0x00
-# 0x05
+PROTO_VERSION = 0x05
 
 # Known/documented functions (the spec lists them but does not number them explicitly in the excerpt.
 # These codes are a conventional mapping used in the field; adjust if your vendor assigns different IDs.)
@@ -86,94 +80,101 @@ def _derive_key1(password: str) -> bytes:
 def _cipher_ecb(key24: bytes) -> DES3:
     return DES3.new(key24, DES3.MODE_ECB)
 
+
 class HDMClient:
-    """
-    Thread-safe(ish) HDM client (sequence managed internally).
-    JSON request/response per spec; UTF-8; 3DES-ECB with PKCS7.
-    - First key = from password (used for GET_OPERATORS_AND_DEPS, LOGIN). :contentReference[oaicite:12]{index=12}
-    - Session key = from LOGIN response (Base64 24 bytes), used for the rest. :contentReference[oaicite:13]{index=13}
-    - Each request includes monotonically increasing 'seq' (server enforces > last). :contentReference[oaicite:14]{index=14}
-    """
-    def __init__(self, host: str, port: int, password: str, debug: bool = True, timeout: float = 30.0):
+    def __init__(self, host: str, port: int, password: str,
+                 debug: bool = True, timeout: float = 10.0,
+                 proto_version: int = PROTO_VERSION,
+                 use_tls: bool = False, tls_verify: bool = True):
         self.host = host
         self.port = port
         self.password = password
         self.timeout = timeout
         self.debug = debug
+        self.proto_version = proto_version
+        self.use_tls = use_tls
+        self.tls_verify = tls_verify
 
         self._seq = 1
         self._lock = threading.Lock()
         self._key1 = _derive_key1(password)
         self._session_key: Optional[bytes] = None
 
-    # ---------- low-level I/O ----------
+    @staticmethod
+    def _recvn(sock: socket.socket, n: int) -> bytes:
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise HDMError(103, f"Socket closed while expecting {n} bytes")
+            buf += chunk
+        return buf
 
-    def _parse_resp_header(self, hdr: bytes):
-        # hdr is 12 bytes
-        proto = hdr[1]
-        progver = hdr[2:6]
-        resp_code = int.from_bytes(hdr[6:8], "little")  # use LE, we saw 0x0093 → 147
-        body_len = int.from_bytes(hdr[8:10], "big")
-        reserved = hdr[10]  # usually 0
-        print(f"[DEBUG] RespHdr={hdr.hex().upper()} Proto={proto}, "
-            f"RespCode={resp_code}, BodyLen={body_len}, Reserved={reserved}")
-        return resp_code, body_len, progver
+    def _pack_request(self, func_code: int, enc_body: bytes) -> bytes:
+        header = bytearray()
+        header += HDM_MAGIC                 # 7 bytes
+        header.append(self.proto_version)   # 1 byte (try 0x00 if 0x05 resets)
+        header.append(func_code & 0xFF)     # 1 byte
+        header += len(enc_body).to_bytes(2, "big")  # 2 bytes
+        header.append(0x00)                 # 1 byte reserved
+        return bytes(header) + enc_body
 
-    # def _send_recv(self, frame: bytes) -> Tuple[bytes, bytes]:
-    #     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    #         s.settimeout(10)
-    #         s.connect((self.host, self.port))
-    #         s.sendall(frame)
-
-    #         # FIX: response header is 12 bytes
-    #         hdr = self._recvn(s, 12)
-
-    #         resp_code, body_len, _progver = self._parse_resp_header(hdr)
-
-    #         enc_body = b""
-    #         if body_len > 0:
-    #             enc_body = self._recvn(s, body_len)
-
-    #         return hdr, enc_body
+    def _open_socket(self) -> socket.socket:
+        raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
+        if not self.use_tls:
+            return raw
+        ctx = ssl.create_default_context()
+        if not self.tls_verify:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx.wrap_socket(raw, server_hostname=self.host)
 
     def _send_recv(self, frame: bytes) -> Tuple[bytes, bytes]:
         last_err = None
-        for attempt in range(1, 4):  # 3 attempts
+        tried_tls_upgrade = False
+        for attempt in range(1, 3):  # 2 tries: current mode, then maybe TLS upgrade
             try:
-                # Use create_connection so connect uses the timeout
-                with socket.create_connection((self.host, self.port), timeout=self.timeout) as s:
-                    s.settimeout(self.timeout)  # recv timeout too
+                with self._open_socket() as s:
+                    s.settimeout(self.timeout)
                     if self.debug:
-                        print(f"[DEBUG] TCP connected to {self.host}:{self.port} (attempt {attempt})")
+                        mode = "TLS" if self.use_tls else "plain"
+                        print(f"[DEBUG] TCP connected to {self.host}:{self.port} ({mode}, attempt {attempt})")
                     s.sendall(frame)
-
-                    hdr = self._recvn(s, 12)  # expect 12-byte header
-                    resp_code, body_len, _progver = self._parse_resp_header(hdr)
-
-                    enc_body = b""
-                    if body_len > 0:
-                        enc_body = self._recvn(s, body_len)
-
+                    hdr = self._recvn(s, 12)  # response header is 12 bytes
+                    resp_code, body_len, _ = self._parse_resp_header(hdr)
+                    enc_body = self._recvn(s, body_len) if body_len > 0 else b""
                     return hdr, enc_body
+
+            except ConnectionResetError as e:
+                last_err = e
+                if self.debug:
+                    print(f"[DEBUG] Connection reset by peer (attempt {attempt}): {e}")
+                # If we were in plaintext, try upgrading to TLS once
+                if not self.use_tls and not tried_tls_upgrade:
+                    if self.debug: print("[DEBUG] Retrying with TLS (server may require TLS).")
+                    self.use_tls = True
+                    tried_tls_upgrade = True
+                    continue
+                raise HDMError(400, f"TCP error reaching {self.host}:{self.port}: {e}")
 
             except socket.timeout as e:
                 last_err = e
                 if self.debug:
-                    print(f"[DEBUG] Connect/recv timeout (attempt {attempt}): {e}")
-            except (ConnectionRefusedError, ConnectionResetError, OSError) as e:
-                # Immediate feedback when the port is closed/reset
+                    print(f"[DEBUG] Timeout (attempt {attempt}): {e}")
+
+            except (ConnectionRefusedError, OSError) as e:
                 raise HDMError(400, f"TCP error reaching {self.host}:{self.port}: {e}")
 
-            # brief backoff before retry
-            time.sleep(0.4)
+            time.sleep(0.3)
 
-        # If we get here, all attempts timed out (likely firewall/drop or wrong port)
         raise HDMError(
             400,
-            f"Timeout contacting {self.host}:{self.port}. "
-            "Host reachable? Port open? Integration mode & IP allowlist enabled on device?",
+            f"Timeout/Reset contacting {self.host}:{self.port}. "
+            "Check TLS requirement, protocol version, Integration mode, or allow-list.",
             {"last_error": str(last_err)}
         )
+
+    # ... keep the rest of your class as-is ...
 
     @staticmethod
     def _recvn(sock: socket.socket, n: int) -> bytes:
