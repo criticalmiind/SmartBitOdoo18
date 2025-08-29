@@ -84,15 +84,25 @@ def _derive_key1(password: str) -> bytes:
 def _cipher_ecb(key24: bytes) -> DES3:
     return DES3.new(key24, DES3.MODE_ECB)
 
+# def _pack_request(function_code: int, enc_body: bytes) -> bytes:
+#     # Request header = 12 bytes:
+#     # [0:7]=MAGIC, [7]=PROTO, [8]=FUNC, [9:11]=length (2 bytes, BE), then encrypted body. :contentReference[oaicite:10]{index=10}
+#     header = bytearray()
+#     header += HDM_MAGIC
+#     header.append(PROTO_VERSION)
+#     header.append(function_code & 0xFF)
+#     header += len(enc_body).to_bytes(2, "big")
+#     return bytes(header) + enc_body
 def _pack_request(function_code: int, enc_body: bytes) -> bytes:
-    # Request header = 12 bytes:
-    # [0:7]=MAGIC, [7]=PROTO, [8]=FUNC, [9:11]=length (2 bytes, BE), then encrypted body. :contentReference[oaicite:10]{index=10}
+    # Request header should be 12 bytes total
     header = bytearray()
-    header += HDM_MAGIC
-    header.append(PROTO_VERSION)
-    header.append(function_code & 0xFF)
-    header += len(enc_body).to_bytes(2, "big")
+    header += HDM_MAGIC                    # 7 bytes
+    header.append(PROTO_VERSION)           # 1 byte
+    header.append(function_code & 0xFF)    # 1 byte
+    header += len(enc_body).to_bytes(2, "big")  # 2 bytes
+    header.append(0x00)                    # reserved / filler (1 byte!)
     return bytes(header) + enc_body
+
 
 def _parse_response_header(hdr: bytes) -> Tuple[int, int, int, int]:
     # Response header (spec sample): byte1=0x00, byte2=protocol, bytes3–6=program ver, 7–8=response code, 9–10=length (BE). :contentReference[oaicite:11]{index=11}
