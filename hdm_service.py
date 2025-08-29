@@ -164,7 +164,7 @@ class HDMClient:
     def _send_recv(self, frame: bytes) -> Tuple[bytes, bytes]:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(10)
-            s.connect((self.ip, self.port))
+            s.connect((self.host, self.port))
             s.sendall(frame)
 
             # FIX: response header is 12 bytes
