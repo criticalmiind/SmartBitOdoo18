@@ -4,7 +4,7 @@ from hdm_service import HDMClient, HDMError
 # Your machine details
 
 # # --------- YOUR CONNECTION / AUTH ---------
-HDM_IP = "123.123.123.14"     # <-- set to your HDM IP
+HDM_IP = "10.254.7.160"     # <-- set to your HDM IP
 HDM_PORT = 8123               # <-- set to your HDM Port
 HDM_PASSWORD = "krLGfzRh"     # <-- fiscal registration password
 
