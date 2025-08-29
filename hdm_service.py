@@ -11,6 +11,7 @@
 # - Error codes table (e.g., 200 OK; 4xx/5xx/errors 101..196). :contentReference[oaicite:7]{index=7}
 
 import socket
+import time
 import json
 import base64
 import hashlib
@@ -92,7 +93,7 @@ class HDMClient:
     - Session key = from LOGIN response (Base64 24 bytes), used for the rest. :contentReference[oaicite:13]{index=13}
     - Each request includes monotonically increasing 'seq' (server enforces > last). :contentReference[oaicite:14]{index=14}
     """
-    def __init__(self, host: str, port: int, password: str, debug: bool = True, timeout: float = 10.0):
+    def __init__(self, host: str, port: int, password: str, debug: bool = True, timeout: float = 30.0):
         self.host = host
         self.port = port
         self.password = password
@@ -117,22 +118,61 @@ class HDMClient:
             f"RespCode={resp_code}, BodyLen={body_len}, Reserved={reserved}")
         return resp_code, body_len, progver
 
+    # def _send_recv(self, frame: bytes) -> Tuple[bytes, bytes]:
+    #     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    #         s.settimeout(10)
+    #         s.connect((self.host, self.port))
+    #         s.sendall(frame)
+
+    #         # FIX: response header is 12 bytes
+    #         hdr = self._recvn(s, 12)
+
+    #         resp_code, body_len, _progver = self._parse_resp_header(hdr)
+
+    #         enc_body = b""
+    #         if body_len > 0:
+    #             enc_body = self._recvn(s, body_len)
+
+    #         return hdr, enc_body
+
     def _send_recv(self, frame: bytes) -> Tuple[bytes, bytes]:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(10)
-            s.connect((self.host, self.port))
-            s.sendall(frame)
+        last_err = None
+        for attempt in range(1, 4):  # 3 attempts
+            try:
+                # Use create_connection so connect uses the timeout
+                with socket.create_connection((self.host, self.port), timeout=self.timeout) as s:
+                    s.settimeout(self.timeout)  # recv timeout too
+                    if self.debug:
+                        print(f"[DEBUG] TCP connected to {self.host}:{self.port} (attempt {attempt})")
+                    s.sendall(frame)
 
-            # FIX: response header is 12 bytes
-            hdr = self._recvn(s, 12)
+                    hdr = self._recvn(s, 12)  # expect 12-byte header
+                    resp_code, body_len, _progver = self._parse_resp_header(hdr)
 
-            resp_code, body_len, _progver = self._parse_resp_header(hdr)
+                    enc_body = b""
+                    if body_len > 0:
+                        enc_body = self._recvn(s, body_len)
 
-            enc_body = b""
-            if body_len > 0:
-                enc_body = self._recvn(s, body_len)
+                    return hdr, enc_body
 
-            return hdr, enc_body
+            except socket.timeout as e:
+                last_err = e
+                if self.debug:
+                    print(f"[DEBUG] Connect/recv timeout (attempt {attempt}): {e}")
+            except (ConnectionRefusedError, ConnectionResetError, OSError) as e:
+                # Immediate feedback when the port is closed/reset
+                raise HDMError(400, f"TCP error reaching {self.host}:{self.port}: {e}")
+
+            # brief backoff before retry
+            time.sleep(0.4)
+
+        # If we get here, all attempts timed out (likely firewall/drop or wrong port)
+        raise HDMError(
+            400,
+            f"Timeout contacting {self.host}:{self.port}. "
+            "Host reachable? Port open? Integration mode & IP allowlist enabled on device?",
+            {"last_error": str(last_err)}
+        )
 
     @staticmethod
     def _recvn(sock: socket.socket, n: int) -> bytes:
