@@ -186,8 +186,12 @@ class HDMClient:
         hdr, enc_body = self._send_recv(req)
 
         proto = hdr[1]
-        if proto != PROTO_VERSION:
-            raise HDMError(402, f"Unsupported protocol version {proto}, expected {PROTO_VERSION}")
+        if proto not in (0, PROTO_VERSION):
+            raise HDMError(402, f"Unsupported protocol version {proto}, expected {PROTO_VERSION} or 0")
+
+        # proto = hdr[1]
+        # if proto != PROTO_VERSION:
+        #     raise HDMError(402, f"Unsupported protocol version {proto}, expected {PROTO_VERSION}")
 
         resp_code_be = int.from_bytes(hdr[6:8], "big")
         resp_code_le = int.from_bytes(hdr[6:8], "little")
