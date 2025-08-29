@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>HDM Client (Browser UI)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- CryptoJS (3DES, SHA256). If you need offline, copy these files inline later. -->
+  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/enc-utf8.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/enc-hex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/sha256.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/tripledes.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/mode-ecb.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/pad-pkcs7.min.js"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; background:#0b1020; color:#e5e7eb }
+    h1 { margin: 0 0 16px; font-size: 20px }
+    .card { background:#111827; border:1px solid #374151; border-radius:16px; padding:16px; margin-bottom:16px; }
+    .grid { display:grid; gap:12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .row { display:flex; gap:8px; align-items:center; }
+    label { font-size:12px; color:#93c5fd }
+    input, select { width:100%; padding:8px 10px; border-radius:10px; border:1px solid #374151; background:#0f172a; color:#e5e7eb }
+    button { padding:10px 14px; border-radius:10px; border:1px solid #2563eb; background:#1d4ed8; color:#fff; cursor:pointer; }
+    button.secondary { border-color:#6b7280; background:#374151 }
+    pre { background:#0f172a; border:1px solid #374151; padding:12px; border-radius:12px; overflow:auto; max-height:40vh; }
+    small { color:#9ca3af }
+  </style>
+</head>
+<body>
+  <h1>HDM Client (3DES / TCP) — Browser UI</h1>
+
+  <div class="card">
+    <div class="grid">
+      <div>
+        <label>HDM IP</label>
+        <input id="ip" value="123.123.123.14" />
+      </div>
+      <div>
+        <label>HDM Port</label>
+        <input id="port" value="8123" />
+      </div>
+      <div>
+        <label>Fiscal Password</label>
+        <input id="password" value="krLGfzRh" />
+      </div>
+      <div>
+        <label>Cashier ID</label>
+        <input id="cashier" value="3" />
+      </div>
+      <div>
+        <label>PIN</label>
+        <input id="pin" value="4321" />
+      </div>
+      <div>
+        <label>Protocol Version</label>
+        <select id="proto">
+          <option value="0">0x00</option>
+          <option value="5" selected>0x05</option>
+        </select>
+      </div>
+      <div>
+        <label>Bridge URL (WebSocket)</label>
+        <input id="bridge" value="ws://127.0.0.1:9001" />
+        <small>Use the Node relay below; no third-party service.</small>
+      </div>
+      <div>
+        <label>TLS (device socket)</label>
+        <select id="usetls">
+          <option value="false" selected>No (plain TCP)</option>
+          <option value="true">Yes (TLS)</option>
+        </select>
+      </div>
+    </div>
+    <div style="margin-top:12px" class="row">
+      <button id="btnConnect">Connect Bridge</button>
+      <button class="secondary" id="btnClose">Close</button>
+      <button id="btnOps">Get Operators & Deps</button>
+      <button id="btnLogin">Login</button>
+      <button id="btnTime">Get Time</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <div><strong>Log</strong></div>
+      <div class="row">
+        <button class="secondary" id="btnClear">Clear</button>
+        <button class="secondary" id="btnMock">Toggle Mock: <span id="mockState">OFF</span></button>
+      </div>
+    </div>
+    <pre id="log"></pre>
+  </div>
+
+<script>
+/* ========== Utils ========== */
+const logEl = document.getElementById('log');
+function log(msg) {
+  const ts = new Date().toISOString();
+  logEl.textContent += `[${ts}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function hex(buf) {
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2,'0')).join('').toUpperCase();
+}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/* ========== Crypto helpers (CryptoJS) ========== */
+function wordArrayFromU8(u8) {
+  const words = [];
+  for (let i = 0; i < u8.length; i += 4) {
+    words.push(
+      ((u8[i]     || 0) << 24) |
+      ((u8[i + 1] || 0) << 16) |
+      ((u8[i + 2] || 0) << 8)  |
+      ((u8[i + 3] || 0))
+    );
+  }
+  return CryptoJS.lib.WordArray.create(words, u8.length);
+}
+function u8FromWordArray(wa) {
+  const u8 = new Uint8Array(wa.sigBytes);
+  let idx = 0;
+  for (let i = 0; i < wa.words.length; i++) {
+    const w = wa.words[i];
+    u8[idx++] = (w >>> 24) & 0xff;
+    if (idx >= u8.length) break;
+    u8[idx++] = (w >>> 16) & 0xff;
+    if (idx >= u8.length) break;
+    u8[idx++] = (w >>> 8) & 0xff;
+    if (idx >= u8.length) break;
+    u8[idx++] = w & 0xff;
+    if (idx >= u8.length) break;
+  }
+  return u8;
+}
+// key1: first 24 bytes of SHA-256(password)
+function deriveKey1(password) {
+  const digest = CryptoJS.SHA256(CryptoJS.enc.Utf8.parse(password)); // 32 bytes
+  const u8 = u8FromWordArray(digest).slice(0, 24);
+  return wordArrayFromU8(u8); // 24-byte key (192-bit)
+}
+function encrypt3DES_ECB_PKCS7(jsonStr, keyWordArray) {
+  const dataWA = CryptoJS.enc.Utf8.parse(jsonStr);
+  const enc = CryptoJS.TripleDES.encrypt(dataWA, keyWordArray, {
+    mode: CryptoJS.mode.ECB,
+    padding: CryptoJS.pad.Pkcs7
+  });
+  return u8FromWordArray(enc.ciphertext);
+}
+function decrypt3DES_ECB_PKCS7(encBytes, keyWordArray) {
+  const ctWA = wordArrayFromU8(encBytes);
+  const decWA = CryptoJS.TripleDES.decrypt({ ciphertext: ctWA }, keyWordArray, {
+    mode: CryptoJS.mode.ECB,
+    padding: CryptoJS.pad.Pkcs7
+  });
+  return CryptoJS.enc.Utf8.stringify(decWA);
+}
+
+/* ========== Protocol constants ========== */
+const HDM_MAGIC = Uint8Array.from([0xD5,0x80,0xD4,0xB4,0xD5,0x84,0x00]);
+const FCODE = {
+  GET_OPERATORS_AND_DEPS: 0x01,
+  LOGIN: 0x02,
+  LOGOUT: 0x03,
+  PRINT_RECEIPT: 0x04,
+  PRINT_LAST_COPY: 0x05,
+  PRINT_RETURN: 0x06,
+  GET_RECEIPT_INFO: 0x07,
+  CASH_IN_OUT: 0x08,
+  GET_DEVICE_TIME: 0x09,
+  PRINT_TEMPLATE: 0x0A,
+  PRINT_REPORT: 0x0B,
+  SET_HEADER_FOOTER: 0x0C,
+  SET_HEADER_LOGO: 0x0D,
+  SYNC: 0x0E,
+  LIST_PAYMENT_SYSTEMS: 0x0F,
+  CHECK_EMARK: 0x10,
+};
+
+/* ========== Transport (WebSocket→TCP bridge) ========== */
+class BridgeTransport {
+  constructor(url) {
+    this.url = url;
+    this.ws = null;
+    this.pending = []; // [{resolve, reject}]
+  }
+  open() {
+    return new Promise((resolve, reject) => {
+      this.ws = new WebSocket(this.url);
+      this.ws.binaryType = 'arraybuffer';
+      this.ws.onopen = () => { log(`Bridge connected: ${this.url}`); resolve(); };
+      this.ws.onerror = (e) => { reject(new Error('Bridge WebSocket error')); };
+      this.ws.onmessage = (ev) => {
+        // Expect two messages: header(12), then body(n)
+        const buf = ev.data;
+        if (this.pending.length === 0) return;
+        const p = this.pending.shift();
+        p.resolve(buf);
+      };
+      this.ws.onclose = () => { log(`Bridge closed`); };
+    });
+  }
+  close() { try { this.ws && this.ws.close(); } catch(_){} }
+  async request(binary) {
+    // Protocol for the relay:
+    // Send: JSON preface describing connection to HDM + frame
+    // To keep it simple, assume relay already knows HDM ip/port from first message
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('Bridge not open');
+    this.ws.send(binary);
+    // Wait hdr (12 bytes)
+    const hdrBuf = await new Promise((resolve, reject) => this.pending.push({resolve, reject}));
+    const hdr = new Uint8Array(hdrBuf);
+    if (hdr.length !== 12) throw new Error(`Bad header length from bridge: ${hdr.length}`);
+    const bodyLen = (hdr[8] << 8) | hdr[9];
+    let body = new Uint8Array(0);
+    if (bodyLen > 0) {
+      const bodyBuf = await new Promise((resolve, reject) => this.pending.push({resolve, reject}));
+      body = new Uint8Array(bodyBuf);
+      if (body.length !== bodyLen) throw new Error(`Body len mismatch: expected ${bodyLen}, got ${body.length}`);
+    }
+    return { hdr, body };
+  }
+}
+
+/* ========== Mock transport (testing without device) ========== */
+class MockTransport {
+  constructor() {}
+  async open(){ log('Mock transport open'); }
+  close(){ log('Mock transport close'); }
+  async request(frame) {
+    // Parse function code for demo
+    const u8 = new Uint8Array(frame);
+    const fcode = u8[HDM_MAGIC.length + 1]; // after magic(7) + proto(1)
+    // Build a minimal OK response with an encrypted body that decrypts to small JSON
+    // For mock, just return empty body and 200 code.
+    const hdr = new Uint8Array(12);
+    hdr[1] = 0x05; // proto
+    // resp code 200 in LE at bytes 6..7
+    hdr[6] = 200 & 0xff;
+    hdr[7] = (200 >> 8) & 0xff;
+    // body length 0
+    hdr[8] = 0; hdr[9] = 0;
+    hdr[10] = 0;
+
+    const body = new Uint8Array(0);
+    // send header then body: our BridgeTransport returns them separately;
+    // here we emulate it by returning both together as two-step expectation.
+    // To fit our BridgeTransport API, return object directly:
+    return { hdr, body };
+  }
+}
+
+/* ========== HDM Client (ported from Python) ========== */
+class HDMClientJS {
+  constructor({ bridge, ip, port, password, protoVersion=0x05, useTLS=false, mock=false }) {
+    this.ip = ip;
+    this.port = Number(port);
+    this.password = password;
+    this.protoVersion = protoVersion & 0xff;
+    this.useTLS = !!useTLS;
+    this.seq = 1;
+    this.key1 = deriveKey1(password);        // CryptoJS WordArray
+    this.sessionKey = null;                  // CryptoJS WordArray
+    this.transport = mock ? new MockTransport() : new BridgeTransport(bridge);
+  }
+
+  async open(){ await this.transport.open(); }
+  close(){ this.transport.close(); }
+
+  _nextSeq(){ this.seq += 1; return this.seq; }
+
+  _buildFrame(funcCode, encBody, proto) {
+    const hdr = new Uint8Array(7 + 1 + 1 + 2 + 1);
+    hdr.set(HDM_MAGIC, 0);
+    hdr[7] = proto & 0xff;
+    hdr[8] = funcCode & 0xff;
+    hdr[9]  = (encBody.length >> 8) & 0xff;
+    hdr[10] = encBody.length & 0xff;
+    hdr[11] = 0x00;
+    const out = new Uint8Array(hdr.length + encBody.length);
+    out.set(hdr, 0);
+    out.set(encBody, hdr.length);
+    return out.buffer;
+  }
+
+  _parseRespHeader(hdr) {
+    if (hdr.length !== 12) throw new Error(`Header len != 12 (${hdr.length})`);
+    const proto = hdr[1];
+    const codeLE = hdr[6] | (hdr[7] << 8);
+    const codeBE = (hdr[6] << 8) | hdr[7];
+    const code = codeLE || codeBE;
+    const bodyLen = (hdr[8] << 8) | hdr[9];
+    const reserved = hdr[10];
+    log(`RespHdr=${hex(hdr.buffer)} proto=${proto} code=${code} bodyLen=${bodyLen} res=${reserved}`);
+    return { code, bodyLen, proto };
+  }
+
+  _encryptJSON(payload, useSession) {
+    const jsonStr = JSON.stringify(payload);
+    const key = useSession ? this.sessionKey : this.key1;
+    if (!key) throw new Error('Missing key');
+    return encrypt3DES_ECB_PKCS7(jsonStr, key);
+  }
+
+  _decryptJSON(encBytes, useSession) {
+    if (!encBytes || encBytes.length === 0) return {};
+    const key = useSession ? this.sessionKey : this.key1;
+    const txt = decrypt3DES_ECB_PKCS7(encBytes, key);
+    return JSON.parse(txt);
+  }
+
+  async _call(fcode, body, useSession) {
+    const enc = this._encryptJSON(body || {}, useSession);
+    const frame = this._buildFrame(fcode, enc, this.protoVersion);
+    log(`→ ${hex(frame.slice(0, 12))} ... (enc ${enc.length} bytes)`);
+
+    const { hdr, body: encBody } = await this.transport.request(frame);
+
+    const { code } = this._parseRespHeader(hdr);
+    if (code !== 200 && encBody.length === 0) {
+      throw new Error(`HDM error ${code} (empty body)`);
+    }
+    const resp = this._decryptJSON(encBody, useSession);
+    if (code !== 200) throw new Error(`HDM error ${code}: ${JSON.stringify(resp)}`);
+    return resp;
+  }
+
+  // First-key calls
+  async getOperatorsAndDepartments() {
+    const body = { password: this.password };
+    return await this._call(FCODE.GET_OPERATORS_AND_DEPS, body, false);
+  }
+
+  async login(cashierId, pin) {
+    const body = { password: this.password, cashier: Number(cashierId), pin: String(pin) };
+    const resp = await this._call(FCODE.LOGIN, body, false);
+    const b64 = resp.key;
+    if (!b64) throw new Error('Login OK but missing session key');
+    const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0)); // 24 bytes
+    if (raw.length !== 24) throw new Error(`Session key length != 24 (got ${raw.length})`);
+    this.sessionKey = wordArrayFromU8(raw);
+    return true;
+  }
+
+  // Session calls
+  async getDeviceTime() {
+    const body = { seq: this._nextSeq() };
+    return await this._call(FCODE.GET_DEVICE_TIME, body, true);
+  }
+}
+
+/* ========== Wire up UI ========== */
+let client = null;
+let mock = false;
+function getForm() {
+  return {
+    ip: document.getElementById('ip').value.trim(),
+    port: Number(document.getElementById('port').value.trim()),
+    password: document.getElementById('password').value,
+    cashier: Number(document.getElementById('cashier').value.trim()),
+    pin: document.getElementById('pin').value.trim(),
+    proto: Number(document.getElementById('proto').value),
+    bridge: document.getElementById('bridge').value.trim(),
+    useTLS: document.getElementById('usetls').value === 'true'
+  };
+}
+function ensureClient() {
+  const f = getForm();
+  if (!client) {
+    client = new HDMClientJS({
+      bridge: `${f.bridge}?ip=${encodeURIComponent(f.ip)}&port=${f.port}&tls=${f.useTLS?'1':'0'}`,
+      ip: f.ip, port: f.port, password: f.password,
+      protoVersion: f.proto, useTLS: f.useTLS, mock
+    });
+  }
+}
+
+document.getElementById('btnConnect').onclick = async () => {
+  try {
+    ensureClient();
+    await client.open();
+    log('Ready.');
+  } catch (e) {
+    log('Connect error: '+ e.message);
+  }
+};
+document.getElementById('btnClose').onclick = () => { if (client) client.close(); client = null; };
+
+document.getElementById('btnOps').onclick = async () => {
+  try {
+    ensureClient();
+    if (!client.transport.ws && !mock) await client.open();
+    const data = await client.getOperatorsAndDepartments();
+    log('Operators/Deps: ' + JSON.stringify(data));
+  } catch (e) {
+    log('Ops error: ' + e.message);
+  }
+};
+
+document.getElementById('btnLogin').onclick = async () => {
+  try {
+    ensureClient();
+    const f = getForm();
+    const ok = await client.login(f.cashier, f.pin);
+    log('Login: ' + ok);
+  } catch (e) {
+    log('Login error: ' + e.message);
+  }
+};
+
+document.getElementById('btnTime').onclick = async () => {
+  try {
+    ensureClient();
+    const dt = await client.getDeviceTime();
+    log('Device time: ' + JSON.stringify(dt));
+  } catch (e) {
+    log('Get time error: ' + e.message);
+  }
+};
+
+document.getElementById('btnClear').onclick = () => { logEl.textContent = ''; };
+document.getElementById('btnMock').onclick = () => {
+  mock = !mock;
+  document.getElementById('mockState').textContent = mock ? 'ON' : 'OFF';
+  if (client) { client.close(); client = null; }
+  log(`Mock mode: ${mock ? 'ON' : 'OFF'}`);
+};
+</script>
+</body>
+</html>
