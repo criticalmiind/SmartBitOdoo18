@@ -84,28 +84,6 @@ def _derive_key1(password: str) -> bytes:
 def _cipher_ecb(key24: bytes) -> DES3:
     return DES3.new(key24, DES3.MODE_ECB)
 
-def _pack_request(func_code: int, enc_body: bytes) -> bytes:
-    header = bytearray()
-    header += HDM_MAGIC                  # 7 bytes
-    header.append(0x00)                  # proto version (try 0x00 instead of 0x05)
-    header.append(func_code & 0xFF)      # function code
-    header += len(enc_body).to_bytes(2, "big")
-    header.append(0x00)                  # reserved
-    return bytes(header) + enc_body
-
-
-# def _parse_response_header(hdr: bytes) -> Tuple[int, int, int, int]:
-#     # Response header (spec sample): byte1=0x00, byte2=protocol, bytes3–6=program ver, 7–8=response code, 9–10=length (BE). :contentReference[oaicite:11]{index=11}
-#     if len(hdr) < 10:
-#         raise HDMError(103, "Response header too short", {"raw": hdr.hex()})
-#     proto = hdr[1]
-#     prog_ver = int.from_bytes(hdr[2:6], "big")
-#     resp_code_be = int.from_bytes(hdr[6:8], "big")
-#     body_len_be = int.from_bytes(hdr[8:10], "big")
-#     # Many devices actually encode the *code value* little-endian inside those two bytes.
-#     resp_code_le = int.from_bytes(hdr[6:8], "little")
-#     return proto, prog_ver, resp_code_be, body_len_be if body_len_be else 0
-
 class HDMClient:
     """
     Thread-safe(ish) HDM client (sequence managed internally).
@@ -166,6 +144,16 @@ class HDMClient:
             buf += chunk
         return buf
 
+    @staticmethod
+    def _pack_request(func_code: int, enc_body: bytes) -> bytes:
+        header = bytearray()
+        header += HDM_MAGIC
+        header.append(PROTO_VERSION)
+        header.append(func_code & 0xFF)
+        header += len(enc_body).to_bytes(2, "big")
+        header.append(0x00)
+        return bytes(header) + enc_body
+    
     # ---------- crypto helpers ----------
 
     def _encrypt(self, payload: Dict[str, Any], use_session: bool) -> bytes:
@@ -190,22 +178,10 @@ class HDMClient:
         with self._lock:
             self._seq += 1
             return self._seq
-
-    @staticmethod
-    def _pack_request(self, func_code: int, enc_body: bytes) -> bytes:
-        header = bytearray()
-        header += HDM_MAGIC
-        header.append(PROTO_VERSION)
-        header.append(func_code & 0xFF)
-        header += len(enc_body).to_bytes(2, "big")
-        header.append(0x00)
-        return bytes(header) + enc_body
     
     # ---------- request call ----------
 
     def _call(self, fcode: int, body: Optional[Dict[str, Any]], use_session: bool) -> Dict[str, Any]:
-        # enc = self._encrypt(body or {}, use_session)
-        # req = _pack_request(fcode, enc)
         enc = self._encrypt(body or {}, use_session)
         req = self._pack_request(fcode, enc)   # ← call the staticmethod
 
