@@ -23,8 +23,21 @@ def main():
     )
 
 
+    # 1) Optional: login to start a session for other functions
+    try:
+        logind = client.login(CASHIER_ID, CASHIER_PIN)
+        print("Login OK (session key established).", logind)
+    except HDMError as e:
+        print("Login failed:", e)
 
-    # 1) Read operators & departments (first key – no login required)
+    # 2) Example follow-up call that needs session key (e.g., device time)
+    try:
+        dt = client.get_device_time()
+        print("Device time:", dt)
+    except HDMError as e:
+        print("Get time failed:", e)
+    
+    # 3) Read operators & departments (first key – no login required)
     try:
         listing = client.get_operators_and_departments()
         deps = listing.get("d", [])
@@ -33,21 +46,6 @@ def main():
         print("Failed to fetch operators/departments:", e)
         # If you see 403/Access denied here, ensure the HDM is in Integration Mode and that your CS IP is whitelisted. :contentReference[oaicite:35]{index=35}
         return
-
-    # 2) Optional: login to start a session for other functions
-    try:
-        logind = client.login(CASHIER_ID, CASHIER_PIN)
-        print("Login OK (session key established).", logind)
-    except HDMError as e:
-        print("Login failed:", e)
-        return
-
-    # 3) Example follow-up call that needs session key (e.g., device time)
-    try:
-        dt = client.get_device_time()
-        print("Device time:", dt)
-    except HDMError as e:
-        print("Get time failed:", e)
 
 if __name__ == "__main__":
     main()
