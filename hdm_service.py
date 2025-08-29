@@ -149,16 +149,43 @@ class HDMClient:
                       f"RespCodeBE={resp_code_be}, BodyLen={body_len}, Total={len(hdr)}")
             body = self._recvn(s, body_len) if body_len else b""
             return hdr, body
+    
+    def _parse_resp_header(self, hdr: bytes):
+        # hdr is 12 bytes
+        proto = hdr[1]
+        progver = hdr[2:6]
+        resp_code = int.from_bytes(hdr[6:8], "little")  # use LE, we saw 0x0093 → 147
+        body_len = int.from_bytes(hdr[8:10], "big")
+        reserved = hdr[10]  # usually 0
+        print(f"[DEBUG] RespHdr={hdr.hex().upper()} Proto={proto}, "
+            f"RespCode={resp_code}, BodyLen={body_len}, Reserved={reserved}")
+        return resp_code, body_len, progver
 
     @staticmethod
-    def _recvn(sock: socket.socket, n: int) -> bytes:
-        buf = b""
-        while len(buf) < n:
-            chunk = sock.recv(n - len(buf))
-            if not chunk:
-                raise HDMError(103, f"Socket closed while expecting {n} bytes")
-            buf += chunk
-        return buf
+    def _send_recv(self, frame: bytes) -> Tuple[bytes, bytes]:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(10)
+            s.connect((self.ip, self.port))
+            s.sendall(frame)
+
+            # FIX: response header is 12 bytes
+            hdr = self._recvn(s, 12)
+
+            resp_code, body_len, _progver = self._parse_resp_header(hdr)
+
+            enc_body = b""
+            if body_len > 0:
+                enc_body = self._recvn(s, body_len)
+
+            return hdr, enc_body
+    # def _recvn(sock: socket.socket, n: int) -> bytes:
+    #     buf = b""
+    #     while len(buf) < n:
+    #         chunk = sock.recv(n - len(buf))
+    #         if not chunk:
+    #             raise HDMError(103, f"Socket closed while expecting {n} bytes")
+    #         buf += chunk
+    #     return buf
 
     # ---------- crypto helpers ----------
 
