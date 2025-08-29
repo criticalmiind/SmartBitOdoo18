@@ -191,11 +191,24 @@ class HDMClient:
             self._seq += 1
             return self._seq
 
+    @staticmethod
+    def _pack_request(self, func_code: int, enc_body: bytes) -> bytes:
+        header = bytearray()
+        header += HDM_MAGIC
+        header.append(PROTO_VERSION)
+        header.append(func_code & 0xFF)
+        header += len(enc_body).to_bytes(2, "big")
+        header.append(0x00)
+        return bytes(header) + enc_body
+    
     # ---------- request call ----------
 
     def _call(self, fcode: int, body: Optional[Dict[str, Any]], use_session: bool) -> Dict[str, Any]:
+        # enc = self._encrypt(body or {}, use_session)
+        # req = _pack_request(fcode, enc)
         enc = self._encrypt(body or {}, use_session)
-        req = _pack_request(fcode, enc)
+        req = self._pack_request(fcode, enc)   # ← call the staticmethod
+
         if self.debug:
             print(f"[DEBUG] Request hex (header+enc): {req.hex().upper()}")
         hdr, enc_body = self._send_recv(frame=req)
