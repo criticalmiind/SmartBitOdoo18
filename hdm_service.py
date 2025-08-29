@@ -220,7 +220,7 @@ class HDMClient:
         req = _pack_request(fcode, enc)
         if self.debug:
             print(f"[DEBUG] Request hex (header+enc): {req.hex().upper()}")
-        hdr, enc_body = self._send_recv(fname=req)
+        hdr, enc_body = self._send_recv(frame=req)
 
         proto = hdr[1]
         if proto not in (0, PROTO_VERSION):
