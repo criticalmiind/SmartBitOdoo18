@@ -11,7 +11,7 @@ CASHIER_PIN = "4321"
 def main():
     client = HDMClient(HDM_IP, HDM_PORT, HDM_PASSWORD, timeout=30.0, debug=True)
 
-    # 1) Get operators & departments (first-key)
+    # 1) Operators & Departments (first-key)
     try:
         listing = client.get_operators_and_departments()
         print("Operators:", listing.get("c"))
