@@ -6,134 +6,174 @@ import os, json, sys
 
 HOST = "123.123.123.14"
 PORT = 8123
-FISCAL_PASSWORD = "krLGfzRh"
+FR_PASSWORD = "krlGfzRh"   # <-- from your 1C screenshot (lowercase `l`)
 OPERATOR_ID = 3
 OPERATOR_PIN = "4321"
 
 BASE = os.path.dirname(__file__)
 TLB_PATH = os.path.join(BASE, "hdm", "HDMPrint.tlb")
-FR_CLSID = "{C0D2BCF7-4877-4645-BD08-3F0D88E7C712}"  # from your TLB output
+FR_CLSID = "{C0D2BCF7-4877-4645-BD08-3F0D88E7C712}"  # FR CoClass
 
 def p(*a): print("[HDM]", *a)
 
-def maybe_json(s):
-    if s is None:
-        return None
-    if isinstance(s, (bytes, bytearray)):
-        s = s.decode("utf-8", "ignore")
-    if isinstance(s, str):
-        t = s.strip()
+def maybe_json(val):
+    if val is None: return None
+    if isinstance(val, (bytes, bytearray)):
+        val = val.decode("utf-8", "ignore")
+    if isinstance(val, str):
+        t = val.strip()
         if (t.startswith("{") and t.endswith("}")) or (t.startswith("[") and t.endswith("]")):
-            try:
-                return json.loads(t)
-            except Exception:
-                return s
-        return s
-    return s
+            try: return json.loads(t)
+            except Exception: return val
+        return val
+    return val
+
+def dump_err(fr, prefix=""):
+    errc = getattr(fr, "ErrCode", None)
+    errd = getattr(fr, "ErrDescription", None)
+    p(f"{prefix}ErrCode={errc} ErrDescription={errd}")
+
+def iter_com_collection(coll):
+    """Handles (), lists, SAFEARRAYs and collections of COM Department/Operator objects."""
+    if coll is None: return
+    # comtypes often shows SAFEARRAY as tuple
+    if isinstance(coll, tuple):
+        items = list(coll)
+    elif isinstance(coll, list):
+        items = coll
+    else:
+        # Try to enumerate COM collection if it supports it
+        try:
+            it = iter(coll)
+            items = list(it)
+        except Exception:
+            items = [coll]
+    for it in items:
+        yield it
+
+def read_dep_obj(obj):
+    # Try common property names; ignore missing ones
+    for k in ("ID", "Id", "id"):
+        try:
+            did = getattr(obj, k)
+            break
+        except Exception:
+            did = None
+    for k in ("Name", "name"):
+        try:
+            name = getattr(obj, k)
+            break
+        except Exception:
+            name = None
+    for k in ("Type", "type"):
+        try:
+            dtyp = getattr(obj, k)
+            break
+        except Exception:
+            dtyp = None
+    return did, name, dtyp
 
 def main():
     if os.name != "nt":
         raise SystemExit("Windows-only (COM).")
 
-    # Load type library (generates comtypes.gen module)
     from comtypes.client import GetModule, CreateObject
     if not os.path.exists(TLB_PATH):
         raise FileNotFoundError(f"Type library not found at {TLB_PATH}")
     GetModule(TLB_PATH)
 
-    # Create FR instance
     fr = CreateObject(FR_CLSID)
 
-    # --- Set connection/auth properties (use what the TLB exposed) ---
-    # Mandatory:
-    setattr(fr, "IP", HOST)
-    setattr(fr, "Port", int(PORT))
-    setattr(fr, "FRPassword", FISCAL_PASSWORD)
-
-    # Optional but harmless (driver may ignore if not needed for this call):
-    try: setattr(fr, "OperatorID", int(OPERATOR_ID))
+    # Set connection/auth properties (from your TLB dump)
+    fr.IP = HOST
+    fr.Port = int(PORT)
+    fr.FRPassword = FR_PASSWORD
+    try: fr.OperatorID = int(OPERATOR_ID)
     except Exception: pass
-    try: setattr(fr, "OperatorPassword", str(OPERATOR_PIN))
+    try: fr.OperatorPassword = str(OPERATOR_PIN)
     except Exception: pass
-
-    # Reasonable timeouts/buffers if available:
+    # Optional quality-of-life props if available
     for prop, val in [
         ("ConnectionReadTimeout", 10000),
         ("ConnectionWriteTimeout", 10000),
         ("ConnectionSendBufferSize", 32768),
         ("ConnectionReceiveBufferSize", 32768),
+        ("ArmenianEncoding", True),
     ]:
         try: setattr(fr, prop, val)
         except Exception: pass
 
-    # --- Ping device (NO ARGS) ---
+    # 1) Ping
     if hasattr(fr, "ConnectionCheck"):
         p("Calling ConnectionCheck() …")
         try:
-            rc = fr.ConnectionCheck()  # no arguments
-            p("ConnectionCheck result:", rc)
+            ok = fr.ConnectionCheck()   # no args
+            p("ConnectionCheck:", ok)
         except Exception as e:
-            p("ConnectionCheck warning:", e)
+            p("ConnectionCheck exception:", e)
+        dump_err(fr, "ConnectionCheck: ")
 
-    # --- Fetch operators & departments (NO ARGS) ---
+    # 2) Operators & Departments
     if not hasattr(fr, "GetOperators"):
-        raise SystemExit("FR.GetOperators not found on COM object.")
+        raise SystemExit("FR.GetOperators not found.")
 
     p("Calling GetOperators() …")
-    result = None
+    ret = None
     try:
-        result = fr.GetOperators()  # most drivers take no args and return JSON or fill props
-    except TypeError as e:
-        # Some builds expose it as a Sub/void; ignore return value then.
-        p("GetOperators returned no value (void/sub). Proceeding. Msg:", e)
+        ret = fr.GetOperators()  # most builds: no args
+    except TypeError:
+        # some builds expose as Sub (void)
+        pass
+    dump_err(fr, "GetOperators: ")
 
-    # Try to parse any direct return
-    parsed = maybe_json(result)
+    parsed = maybe_json(ret)
 
-    # Also read properties the driver exposes
-    deps_prop = None
-    ops_prop = None
-    try: deps_prop = maybe_json(getattr(fr, "FRDepartments"))
-    except Exception: pass
-    try: ops_prop  = maybe_json(getattr(fr, "FROperators"))
-    except Exception: pass
+    # Read properties filled by the driver
+    try: fr_ops = getattr(fr, "FROperators")
+    except Exception: fr_ops = None
+    try: fr_deps = getattr(fr, "FRDepartments")
+    except Exception: fr_deps = None
 
-    # Prefer explicit departments property; else look in returned JSON
-    departments = None
-    if isinstance(deps_prop, (list, dict, str)) and deps_prop:
-        departments = deps_prop
-    elif isinstance(parsed, dict):
-        departments = parsed.get("d") or parsed.get("departments") or parsed.get("Departments")
-    elif isinstance(parsed, list):
-        # Some drivers return a list directly
-        departments = parsed
-
-    # Print everything we’ve got so you can see the payload
+    # Print raw payloads
     print("\n=== Raw FROperators property ===")
-    print(json.dumps(ops_prop, ensure_ascii=False, indent=2) if isinstance(ops_prop, (dict, list))
-          else (ops_prop if ops_prop is not None else "(none)"))
+    if isinstance(fr_ops, (dict, list)):
+        print(json.dumps(fr_ops, ensure_ascii=False, indent=2))
+    else:
+        print(fr_ops if fr_ops is not None else "(none)")
 
     print("\n=== Raw FRDepartments property ===")
-    print(json.dumps(deps_prop, ensure_ascii=False, indent=2) if isinstance(deps_prop, (dict, list))
-          else (deps_prop if deps_prop is not None else "(none)"))
-
-    if isinstance(parsed, (dict, list)):
-        print("\n=== Raw GetOperators() return ===")
-        print(json.dumps(parsed, ensure_ascii=False, indent=2))
-    elif parsed is not None:
-        print("\n=== Raw GetOperators() return ===")
-        print(parsed)
-
-    # Friendly summary
-    if isinstance(departments, list):
-        print("\n=== Departments (parsed) ===")
-        for d in departments:
-            did = (d.get("id") or d.get("ID")) if isinstance(d, dict) else None
-            name = (d.get("name") or d.get("Name")) if isinstance(d, dict) else str(d)
-            dtype = (d.get("type") or d.get("Type")) if isinstance(d, dict) else None
-            print(f"ID={did}  Name={name}  Type={dtype}")
+    if isinstance(fr_deps, (dict, list)):
+        print(json.dumps(fr_deps, ensure_ascii=False, indent=2))
     else:
-        print("\n(No structured departments list detected; see raw sections above.)")
+        print(fr_deps if fr_deps is not None else "(none)")
+
+    if parsed is not None:
+        print("\n=== Raw GetOperators() return ===")
+        print(parsed if not isinstance(parsed, (dict, list))
+              else json.dumps(parsed, ensure_ascii=False, indent=2))
+
+    # Try to iterate COM collections and print nicely
+    printed_any = False
+    if fr_deps:
+        print("\n=== Departments (from FRDepartments) ===")
+        for item in iter_com_collection(fr_deps):
+            did, name, dtyp = read_dep_obj(item)
+            print(f"ID={did}  Name={name}  Type={dtyp}")
+            printed_any = True
+
+    if not printed_any and isinstance(parsed, dict):
+        deps = parsed.get("d") or parsed.get("departments") or parsed.get("Departments")
+        if deps:
+            print("\n=== Departments (from JSON) ===")
+            for d in deps:
+                did = d.get("id") or d.get("ID")
+                name = d.get("name") or d.get("Name")
+                dtyp = d.get("type") or d.get("Type")
+                print(f"ID={did}  Name={name}  Type={dtyp}")
+            printed_any = True
+
+    if not printed_any:
+        print("\n(No structured departments detected; see raw sections and ErrCode/ErrDescription.)")
 
 if __name__ == "__main__":
     main()
