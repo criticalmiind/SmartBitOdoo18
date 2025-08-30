@@ -36,23 +36,27 @@ DLL_PATH = os.path.join(os.path.dirname(__file__), "HDMPrint.dll")
 
 # ================== NAME CANDIDATES (adjust if needed) ===============
 CANDIDATES_CONNECT = [
-    "ConnectTCP", "Connect", "OpenTCP", "Open", "Init", "Initialize"
+    "ConnectTCP", "Connect", "OpenTCP", "Open", "Init", "Initialize",
+    "InitializeDevice", "InitializePrinter", "Start", "StartSession", "ConnectToServer"
 ]
 CANDIDATES_LOGIN = [
-    "Login", "LogIn", "SignIn", "Authorize", "Auth"
+    "Login", "LogIn", "SignIn", "Authorize", "Auth",
+    "OperatorLogin", "CashierLogin", "LoginEx", "FR_Login", "FR_LoginEx"
 ]
 CANDIDATES_DEPARTMENTS = [
-    "GetDepartments", "GetDepartmentList", "Departments", "FetchDepartments"
+    "GetDepartments", "GetDepartmentList", "Departments", "FetchDepartments",
+    "GetDepartment", "GetDepartmentsJSON", "FR_GetDepartments", "ReadDepartments", "GetDepList"
 ]
 CANDIDATES_DEVICE_INFO = [
-    "GetDeviceInfo", "DeviceInfo", "GetInfo", "ReadDeviceInfo"
+    "GetDeviceInfo", "DeviceInfo", "GetInfo", "ReadDeviceInfo",
+    "GetDeviceInformation", "GetDeviceInfoJSON", "FR_GetDeviceInfo", "GetStatus"
 ]
 CANDIDATES_DISCONNECT = [
-    "Disconnect", "Close", "Shutdown"
+    "Disconnect", "Close", "Shutdown", "End", "Stop", "Finalize"
 ]
 
 # For native DLLs we try common prefixes/suffixes and A/W variants
-NATIVE_NAME_PREFIXES = ["", "HDM_", "Hdm", "hdm_"]
+NATIVE_NAME_PREFIXES = ["", "HDM_", "Hdm_", "Hdm", "hdm_", "FR_", "Fr_", "fr_"]
 NATIVE_SUFFIXES = ["", "A", "W"]  # A=ANSI, W=Wide
 
 # ================== UTILITIES ========================================
@@ -300,6 +304,135 @@ class ExportsInspector:
         return None
 
 
+class COMBackend:
+    """Optional COM fallback if the vendor ships an Automation server (Regsvr32-registered)."""
+    PROGIDS = [
+        "HDMPrint.HDM", "HDM.HDMPrint", "HDMPrint.Application",
+        "HDM.Application", "Fiscal.HDM", "FiscalPrinter.HDM"
+    ]
+    def __init__(self):
+        import comtypes.client  # type: ignore
+        last = None
+        self.app = None
+        for pid in self.PROGIDS:
+            try:
+                self.app = comtypes.client.CreateObject(pid)
+                debug(f"COM: created {pid}")
+                break
+            except Exception as e:
+                last = e
+                continue
+        if self.app is None:
+            raise RuntimeError(f"COM object not found (tried: {', '.join(self.PROGIDS)}); last={last}")
+        # resolve methods lazily
+        self._m = {}
+
+    def _resolve(self, bases: List[str]) -> Tuple[Callable, bool]:
+        for base in bases:
+            # Try with prefixes/suffixes too
+            for pref in NATIVE_NAME_PREFIXES:
+                for suff in NATIVE_SUFFIXES:
+                    name = f"{pref}{base}{suff}"
+                    if hasattr(self.app, name):
+                        fn = getattr(self.app, name)
+                        # COM usually expects BSTR (wide)
+                        return fn, True
+            if hasattr(self.app, base):
+                fn = getattr(self.app, base)
+                return fn, True
+        raise AttributeError(f"COM: method not found for candidates {bases}")
+
+    def connect(self, host: str, port: int, timeout_ms: int = 10000) -> None:
+        fn, _ = self._resolve(CANDIDATES_CONNECT)
+        try:
+            fn(host, int(port), int(timeout_ms))
+        except TypeError:
+            fn(host, int(port))
+
+    def login(self, fiscal_password: str, cashier_id: int, pin: str, department: int = DEPARTMENT) -> None:
+        fn, _ = self._resolve(CANDIDATES_LOGIN)
+        trials = [
+            (cashier_id, pin, fiscal_password),
+            (fiscal_password, cashier_id, pin),
+            (department, cashier_id, pin, fiscal_password),
+        ]
+        last = None
+        for args in trials:
+            try:
+                fn(*args)
+                return
+            except Exception as e:
+                last = e
+                continue
+        raise RuntimeError(f"COM login failed: {last}")
+
+    def get_departments(self) -> Any:
+        fn, _ = self._resolve(CANDIDATES_DEPARTMENTS)
+        try:
+            s = fn()
+        except TypeError:
+            # buffer style not common in COM; attempt property
+            s = getattr(self.app, "Departments", None)
+        return _maybe_json(s)
+
+    def get_device_info(self) -> Any:
+        fn, _ = self._resolve(CANDIDATES_DEVICE_INFO)
+        try:
+            s = fn()
+        except TypeError:
+            s = getattr(self.app, "DeviceInfo", None)
+        return _maybe_json(s)
+
+    def disconnect(self) -> None:
+        try:
+            fn, _ = self._resolve(CANDIDATES_DISCONNECT)
+            try:
+                fn()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+
+class ExportsInspector:
+    """Optional PE export table reader (uses pefile if available)."""
+    def __init__(self, dll_path: str):
+        self.dll_path = dll_path
+        self.names: List[str] = []
+        try:
+            import pefile  # type: ignore
+            pe = pefile.PE(dll_path)
+            if hasattr(pe, 'DIRECTORY_ENTRY_EXPORT'):
+                for sym in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+                    if sym.name:
+                        try:
+                            self.names.append(sym.name.decode('utf-8', 'ignore'))
+                        except Exception:
+                            pass
+        except Exception:
+            self.names = []
+
+    def find_like(self, bases: List[str]) -> Optional[str]:
+        if not self.names:
+            return None
+        low = [b.lower() for b in bases]
+        for n in self.names:
+            if any(n.lower() == b for b in low):
+                return n
+        for n in self.names:
+            if any(b in n.lower() for b in low):
+                return n
+        for n in self.names:
+            nn = n.lower()
+            for base in low:
+                for pref in NATIVE_NAME_PREFIXES:
+                    for suff in NATIVE_SUFFIXES:
+                        candidate = f"{pref}{base}{suff}".lower()
+                        if candidate == nn or candidate in nn:
+                            return n
+        return None
+
+
 class NativeBackend:
     def __init__(self, dll_path: str):
         debug("Attempting native DLL load via ctypes…")
@@ -315,7 +448,6 @@ class NativeBackend:
         self._exports = ExportsInspector(dll_path)
         if self._exports.names:
             debug(f"Exported functions found: {len(self._exports.names)}")
-            # Print a small sample to help debugging
             for name in sorted(self._exports.names)[:30]:
                 debug(f"  export: {name}")
         else:
@@ -328,9 +460,8 @@ class NativeBackend:
             return None
 
     def _resolve(self, base_names: List[str]) -> Tuple[Callable, bool]:
-        """Resolve a function. Returns (callable, is_wide). Tries many patterns and export scan."""
         last_err = None
-        # 1) Try direct prefix/suffix combos first
+        # 1) direct names with prefixes/suffixes
         for base in base_names:
             for pref in NATIVE_NAME_PREFIXES:
                 for suff in NATIVE_SUFFIXES:
@@ -340,7 +471,7 @@ class NativeBackend:
                         wide = suff == "W"
                         debug(f"Resolved '{base}' -> {name} (wide={wide})")
                         return fn, wide
-        # 2) Scan export table for something similar
+        # 2) export table fuzzy
         if self._exports.names:
             match = self._exports.find_like(base_names)
             if match:
@@ -349,48 +480,53 @@ class NativeBackend:
                     wide = match.endswith('W')
                     debug(f"Resolved by exports: '{base_names}' -> {match} (wide={wide})")
                     return fn, wide
-        # 3) Try stdcall-decorated variants like _FunctionName@N
+        # 3) stdcall-decorated variants including prefixes/suffixes
         for base in base_names:
-            for n in (8, 12, 16, 20, 24, 28, 32):
-                decorated = f"_{base}@{n}"
-                fn = self._get_proc(decorated)
-                if fn:
-                    debug(f"Resolved stdcall-decorated '{base}' -> {decorated}")
-                    return fn, False
+            for pref in NATIVE_NAME_PREFIXES:
+                for suff in NATIVE_SUFFIXES:
+                    for n in (8, 12, 16, 20, 24, 28, 32, 36, 40):
+                        decorated = f"_{pref}{base}{suff}@{n}"
+                        fn = self._get_proc(decorated)
+                        if fn:
+                            debug(f"Resolved stdcall '{base}' -> {decorated}")
+                            return fn, suff == 'W'
         raise AttributeError(f"Function not found for candidates: {base_names}")
 
     def connect(self, host: str, port: int, timeout_ms: int = 10000) -> None:
         fn, wide = self._resolve(CANDIDATES_CONNECT)
-        # We try several common signatures conservatively.
         fn.restype = ctypes.c_int
         if wide:
-            try:
-                fn.argtypes = [ctypes.c_wchar_p, ctypes.c_uint16, ctypes.c_int]
-                rc = fn(host, port, timeout_ms)
-            except Exception:
-                fn.argtypes = [ctypes.c_wchar_p, ctypes.c_uint16]
-                rc = fn(host, port)
+            for sig in ([ctypes.c_wchar_p, ctypes.c_uint16, ctypes.c_int], [ctypes.c_wchar_p, ctypes.c_uint16]):
+                try:
+                    fn.argtypes = sig
+                    args = [host, port] + ([timeout_ms] if len(sig) == 3 else [])
+                    rc = fn(*args)
+                    if isinstance(rc, int) and rc < 0:
+                        continue
+                    return
+                except Exception:
+                    continue
         else:
-            try:
-                fn.argtypes = [ctypes.c_char_p, ctypes.c_uint16, ctypes.c_int]
-                rc = fn(host.encode('utf-8'), port, timeout_ms)
-            except Exception:
-                fn.argtypes = [ctypes.c_char_p, ctypes.c_uint16]
-                rc = fn(host.encode('utf-8'), port)
-        # Some APIs return 0 on success; some return positive handle. Treat negative as error.
-        if isinstance(rc, int) and rc < 0:
-            raise RuntimeError(f"Connect failed, rc={rc}")
+            for sig in ([ctypes.c_char_p, ctypes.c_uint16, ctypes.c_int], [ctypes.c_char_p, ctypes.c_uint16]):
+                try:
+                    fn.argtypes = sig
+                    args = [host.encode('utf-8'), port] + ([timeout_ms] if len(sig) == 3 else [])
+                    rc = fn(*args)
+                    if isinstance(rc, int) and rc < 0:
+                        continue
+                    return
+                except Exception:
+                    continue
+        raise RuntimeError("Connect failed for all tried signatures")
 
     def login(self, fiscal_password: str, cashier_id: int, pin: str, department: int = DEPARTMENT) -> None:
         fn, wide = self._resolve(CANDIDATES_LOGIN)
         str_t = ctypes.c_wchar_p if wide else ctypes.c_char_p
-        # Try several known shapes in order
         trials = [
             ([ctypes.c_int, str_t, str_t], (cashier_id, pin, fiscal_password)),
             ([str_t, ctypes.c_int, str_t], (fiscal_password, cashier_id, pin)),
             ([ctypes.c_int, ctypes.c_int, str_t, str_t], (department, cashier_id, pin, fiscal_password)),
         ]
-        last_rc = None
         for argtypes, args in trials:
             try:
                 fn.restype = ctypes.c_int
@@ -402,12 +538,11 @@ class NativeBackend:
                     else:
                         call_args.append(a)
                 rc = fn(*call_args)
-                last_rc = rc
                 if not isinstance(rc, int) or rc >= 0:
                     return
             except Exception:
                 continue
-        raise RuntimeError(f"Login failed, rc={last_rc}")
+        raise RuntimeError("Login failed for all tried signatures")
 
     def get_departments(self) -> Any:
         fn, wide = self._resolve(CANDIDATES_DEPARTMENTS)
@@ -417,18 +552,17 @@ class NativeBackend:
         try:
             fn.argtypes = [ctypes.c_void_p, ctypes.c_int]
             rc = fn(buf, out_len)
+            if isinstance(rc, int) and rc < 0:
+                raise RuntimeError(f"GetDepartments failed, rc={rc}")
+            raw = buf.value if wide else buf.value.decode('utf-8', 'ignore')
+            return _maybe_json(raw)
         except Exception:
-            # Some APIs: returns pointer to string; no args
             fn.argtypes = []
             fn.restype = ctypes.c_wchar_p if wide else ctypes.c_char_p
             s = fn()
             if s is None:
                 return None
             return _maybe_json(s if wide else s.decode('utf-8', 'ignore'))
-        if rc < 0:
-            raise RuntimeError(f"GetDepartments failed, rc={rc}")
-        raw = buf.value if wide else buf.value.decode('utf-8', 'ignore')
-        return _maybe_json(raw)
 
     def get_device_info(self) -> Any:
         fn, wide = self._resolve(CANDIDATES_DEVICE_INFO)
@@ -438,6 +572,10 @@ class NativeBackend:
         try:
             fn.argtypes = [ctypes.c_void_p, ctypes.c_int]
             rc = fn(buf, out_len)
+            if isinstance(rc, int) and rc < 0:
+                raise RuntimeError(f"GetDeviceInfo failed, rc={rc}")
+            raw = buf.value if wide else buf.value.decode('utf-8', 'ignore')
+            return _maybe_json(raw)
         except Exception:
             fn.argtypes = []
             fn.restype = ctypes.c_wchar_p if wide else ctypes.c_char_p
@@ -445,10 +583,6 @@ class NativeBackend:
             if s is None:
                 return None
             return _maybe_json(s if wide else s.decode('utf-8', 'ignore'))
-        if rc < 0:
-            raise RuntimeError(f"GetDeviceInfo failed, rc={rc}")
-        raw = buf.value if wide else buf.value.decode('utf-8', 'ignore')
-        return _maybe_json(raw)
 
     def disconnect(self) -> None:
         try:
