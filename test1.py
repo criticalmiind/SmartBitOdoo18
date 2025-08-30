@@ -1,117 +1,201 @@
-import socket, ssl, json, hashlib, base64, time
-from Crypto.Cipher import DES3
-from Crypto.Util.Padding import pad, unpad
+# hdm_departments_com.py
+# Minimal COM-based caller for HDMPrint.tlb/HDMPrint.dll to fetch Departments
+
+import os, sys, json, re
+from typing import Any, List, Tuple, Optional
 
 HOST = "123.123.123.14"
-PORTS = [8123]                 # you can add 443 here if your box does TLS on 443
-PASSWORD = "krLGfzRh"
+PORT = 8123
+FISCAL_PASSWORD = "krLGfzRh"
+CASHIER_ID = 3
+CASHIER_PIN = "4321"
+DEPARTMENT = 1
 
-HDM_MAGIC = bytes.fromhex("D5 80 D4 B4 D5 84 00")
-PROTO_TRY = (0x00, 0x05)
-FCODE_TRY = (0x01, 0x21)
-LEN_ENDIAN_TRY = ("little", "big")
-TLS_TRY = (False, True)        # try both plain and TLS on the same port
+BASE_DIR = os.path.dirname(__file__)
+TLB_PATH = os.path.join(BASE_DIR, "hdm", "HDMPrint.tlb")
+DLL_PATH = os.path.join(BASE_DIR, "hdm", "HDMPrint.dll")  # optional (registration)
 
-def key1(pw: str) -> bytes:
-    # First 24 bytes of SHA-256(password), fixed to 3DES odd parity
-    raw = hashlib.sha256(pw.encode("utf-8")).digest()[:24]
-    return DES3.adjust_key_parity(raw)
+# Candidate names we try to match on the COM object (case-insensitive)
+CANDIDATES_CONNECT = ["ConnectTCP", "Connect", "OpenTCP", "Open", "Init", "Initialize", "Start", "InitializeDevice"]
+CANDIDATES_LOGIN   = ["LoginEx", "Login", "CashierLogin", "OperatorLogin", "Authorize", "Auth"]
+CANDIDATES_DEPS    = ["GetDepartmentsJSON", "GetDepartmentList", "GetDepartments", "Departments"]
 
-def enc_first(obj: dict) -> bytes:
-    data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-    c = DES3.new(key1(PASSWORD), DES3.MODE_ECB)
-    return c.encrypt(pad(data, 8))
+PREFIXES = ["", "HDM_", "Hdm_", "FR_", "Fr_"]
 
-def dec_first(enc: bytes) -> dict:
-    if not enc:
-        return {}
-    c = DES3.new(key1(PASSWORD), DES3.MODE_ECB)
-    plain = unpad(c.decrypt(enc), 8)
-    return json.loads(plain.decode("utf-8"))
+def debug(msg: str): print(f"[HDM] {msg}")
 
-def recvn(s: socket.socket, n: int) -> bytes:
-    buf = b""
-    while len(buf) < n:
-        chunk = s.recv(n - len(buf))
-        if not chunk:
-            raise ConnectionError("socket closed")
-        buf += chunk
-    return buf
+def pretty(obj: Any) -> str:
+    try: return json.dumps(obj, ensure_ascii=False, indent=2)
+    except Exception: return str(obj)
 
-def open_sock(host, port, use_tls, timeout=10.0):
-    s = socket.create_connection((host, port), timeout=timeout)
-    s.settimeout(timeout)
-    if use_tls:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        s = ctx.wrap_socket(s, server_hostname=host)
-    return s
+def load_type_library() -> Any:
+    from comtypes.client import GetModule
+    if not os.path.exists(TLB_PATH):
+        raise FileNotFoundError(f"Type library not found: {TLB_PATH}")
+    mod = GetModule(TLB_PATH)  # generates comtypes.gen.<something>
+    debug(f"Loaded TLB: {TLB_PATH}")
+    return mod
 
-def try_once(port, use_tls, proto, fcode, len_endian):
-    body = enc_first({"password": PASSWORD})
-    header = bytearray()
-    header += HDM_MAGIC
-    header.append(proto & 0xFF)
-    header.append(fcode & 0xFF)
-    header += len(body).to_bytes(2, len_endian)
-    header.append(0x00)
-    frame = bytes(header) + body
+def iter_coclasses(mod) -> List[Tuple[str, str]]:
+    """
+    Return [(name, clsid_str), ...] for all CoClasses in the type library.
+    """
+    import comtypes.gen
+    py_mod = sys.modules[mod.__name__]  # generated python module
+    result = []
+    for name in dir(py_mod):
+        obj = getattr(py_mod, name)
+        if hasattr(obj, "_reg_clsid_"):
+            try:
+                clsid = obj._reg_clsid_
+                result.append((name, str(clsid)))
+            except Exception:
+                pass
+    return result
 
-    with open_sock(HOST, port, use_tls, timeout=10.0) as s:
-        s.sendall(frame)
+def create_com_object(clsid: str):
+    from comtypes.client import CreateObject
+    # Use CLSID directly; avoids needing ProgID
+    return CreateObject(clsid)
 
-        # response header: usually 10 bytes, sometimes +1 reserved
-        hdr = recvn(s, 10)
-        s.settimeout(0.05)
+def list_methods(obj) -> List[str]:
+    # comtypes IDispatch exposes methods as attributes; filter dunders/props
+    names = []
+    for n in dir(obj):
+        if n.startswith("_"):
+            continue
         try:
-            extra = s.recv(1)
-            if extra:
-                hdr += extra
-        except socket.timeout:
-            pass
-        finally:
-            s.settimeout(10.0)
-
-        code_le = int.from_bytes(hdr[6:8], "little") if len(hdr) >= 8 else 0
-        blen = int.from_bytes(hdr[8:10], "big") if len(hdr) >= 10 else 0
-        body_enc = recvn(s, blen) if blen else b""
-
-    # Some firmwares return 0 for success, others 200
-    if code_le not in (0, 200):
-        try:
-            err = dec_first(body_enc)
+            attr = getattr(obj, n)
+            if callable(attr):
+                names.append(n)
         except Exception:
-            err = {"raw": body_enc.hex().upper()}
-        raise RuntimeError(f"code={code_le}, body={err}")
+            continue
+    return sorted(names, key=str.lower)
 
-    resp = dec_first(body_enc)
-    return resp
+def resolve_method(obj, candidates: List[str]) -> Optional[str]:
+    methods = list_methods(obj)
+    low = [m.lower() for m in methods]
+    # exact matches (with common prefixes)
+    for base in candidates:
+        for pref in PREFIXES:
+            want = (pref + base).lower()
+            if want in low:
+                return methods[low.index(want)]
+    # contains matches
+    for base in candidates:
+        for i, m in enumerate(low):
+            if base.lower() in m:
+                return methods[i]
+    return None
+
+def try_call(fn, argsets: List[tuple]):
+    last = None
+    for args in argsets:
+        try:
+            return fn(*args)
+        except Exception as e:
+            last = e
+            continue
+    raise RuntimeError(f"Call failed for all signatures. Last={last}")
 
 def main():
+    # 1) Load type library and find coclasses
+    mod = load_type_library()
+    coclasses = iter_coclasses(mod)
+    if not coclasses:
+        raise SystemExit("No CoClasses found in TLB. Is the TLB correct?")
+
+    debug(f"Found {len(coclasses)} CoClass(es): " + ", ".join(f"{n}={c}" for n, c in coclasses))
     last_err = None
-    for port in PORTS:
-        for use_tls in TLS_TRY:
-            for proto in PROTO_TRY:
-                for fcode in FCODE_TRY:
-                    for le in LEN_ENDIAN_TRY:
-                        try:
-                            print(f"[TRY] host={HOST} port={port} tls={use_tls} proto=0x{proto:02X} fcode=0x{fcode:02X} len={le}")
-                            resp = try_once(port, use_tls, proto, fcode, le)
-                            dlist = resp.get("d") or resp.get("list", {}).get("d")
-                            print(f"[OK ] matched tls={use_tls} proto=0x{proto:02X} fcode=0x{fcode:02X} len={le}")
-                            print("\n=== Departments ===")
-                            if dlist:
-                                for d in dlist:
-                                    print(f"ID={d.get('id')}  Name={d.get('name')}  Type={d.get('type')}")
-                            else:
-                                print(json.dumps(resp, ensure_ascii=False, indent=2))
-                            return
-                        except Exception as e:
-                            last_err = e
-                            time.sleep(0.1)
-                            continue
-    raise SystemExit(f"All attempts failed. Last error: {last_err}")
+
+    for name, clsid in coclasses:
+        debug(f"Trying CoClass {name} ({clsid}) …")
+        try:
+            obj = create_com_object(clsid)
+        except Exception as e:
+            last_err = e
+            debug(f"  CreateObject failed: {e}")
+            continue
+
+        methods = list_methods(obj)
+        debug(f"  Methods: {', '.join(methods) or '(none)'}")
+
+        # 2) Resolve connect/init
+        m_connect = resolve_method(obj, CANDIDATES_CONNECT)
+        if not m_connect:
+            debug("  No connect/initialize-like method. Trying next CoClass …")
+            continue
+        debug(f"  Using connect method: {m_connect}")
+
+        # 3) Resolve login (optional)
+        m_login = resolve_method(obj, CANDIDATES_LOGIN)
+        if m_login:
+            debug(f"  Using login method: {m_login}")
+        else:
+            debug("  No login-like method found (may not be required).")
+
+        # 4) Resolve departments
+        m_deps = resolve_method(obj, CANDIDATES_DEPS)
+        if not m_deps:
+            debug("  No departments-like method found. Trying next CoClass …")
+            continue
+        debug(f"  Using departments method: {m_deps}")
+
+        # 5) Connect
+        try:
+            fn = getattr(obj, m_connect)
+            # common signatures: (host, port, timeout) or (host, port)
+            try_call(fn, [
+                (HOST, int(PORT), 10000),
+                (HOST, int(PORT)),
+            ])
+            debug("  Connected.")
+        except Exception as e:
+            last_err = e
+            debug(f"  Connect failed: {e}")
+            continue
+
+        # 6) Login (optional)
+        if m_login:
+            try:
+                fn = getattr(obj, m_login)
+                # try common orders:
+                try_call(fn, [
+                    (int(CASHIER_ID), str(CASHIER_PIN), str(FISCAL_PASSWORD)),
+                    (str(FISCAL_PASSWORD), int(CASHIER_ID), str(CASHIER_PIN)),
+                    (int(DEPARTMENT), int(CASHIER_ID), str(CASHIER_PIN), str(FISCAL_PASSWORD)),
+                ])
+                debug("  Login OK.")
+            except Exception as e:
+                debug(f"  Login failed (continuing anyway): {e}")
+
+        # 7) Get Departments
+        try:
+            fn = getattr(obj, m_deps)
+            # Most COM drivers return a JSON/text string and take no args
+            try:
+                res = fn()
+            except TypeError:
+                # Rare buffer form (discouraged in COM) – try (outLen) or (None)
+                res = fn(65536)
+            if isinstance(res, (bytes, bytearray)):
+                res = res.decode("utf-8", "ignore")
+            # pretty print
+            print("\n=== Departments (raw) ===")
+            try:
+                print(pretty(json.loads(res)))
+            except Exception:
+                print(res)
+            return
+        except Exception as e:
+            last_err = e
+            debug(f"  GetDepartments failed: {e}")
+            continue
+
+    # If we reached here, none of the CoClasses worked end-to-end
+    raise SystemExit(f"Could not fetch departments via COM. Last error: {last_err}")
 
 if __name__ == "__main__":
+    if os.name != "nt":
+        raise SystemExit("This COM approach requires Windows.")
     main()
