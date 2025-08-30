@@ -257,6 +257,49 @@ class DotNetBackend:
 
 
 # ================== NATIVE BACKEND (ctypes) ==========================
+class ExportsInspector:
+    """Optional PE export table reader (uses pefile if available)."""
+    def __init__(self, dll_path: str):
+        self.dll_path = dll_path
+        self.names: List[str] = []
+        try:
+            import pefile  # type: ignore
+            pe = pefile.PE(dll_path)
+            if hasattr(pe, 'DIRECTORY_ENTRY_EXPORT'):
+                for sym in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+                    if sym.name:
+                        try:
+                            self.names.append(sym.name.decode('utf-8', 'ignore'))
+                        except Exception:
+                            pass
+        except Exception:
+            # pefile not installed or failed to parse -> silently ignore
+            self.names = []
+
+    def find_like(self, bases: List[str]) -> Optional[str]:
+        if not self.names:
+            return None
+        low = [b.lower() for b in bases]
+        # Prefer exact case-insensitive matches first
+        for n in self.names:
+            if any(n.lower() == b for b in low):
+                return n
+        # Then contains matches
+        for n in self.names:
+            if any(b in n.lower() for b in low):
+                return n
+        # Try with common prefixes/suffixes
+        for n in self.names:
+            nn = n.lower()
+            for base in low:
+                for pref in NATIVE_NAME_PREFIXES:
+                    for suff in NATIVE_SUFFIXES:
+                        candidate = f"{pref}{base}{suff}".lower()
+                        if candidate == nn or candidate in nn:
+                            return n
+        return None
+
+
 class NativeBackend:
     def __init__(self, dll_path: str):
         debug("Attempting native DLL load via ctypes…")
@@ -265,90 +308,126 @@ class NativeBackend:
         if not os.path.exists(dll_path):
             raise FileNotFoundError(f"DLL not found: {dll_path}")
         try:
-            # stdcall is common for Windows DLLs
             self.lib = ctypes.WinDLL(dll_path)
         except Exception:
             self.lib = ctypes.CDLL(dll_path)
+        self._handle = self.lib._handle
+        self._exports = ExportsInspector(dll_path)
+        if self._exports.names:
+            debug(f"Exported functions found: {len(self._exports.names)}")
+            # Print a small sample to help debugging
+            for name in sorted(self._exports.names)[:30]:
+                debug(f"  export: {name}")
+        else:
+            debug("Could not enumerate exports (install 'pefile' for better auto-detection).")
 
-        # resolve callables lazily when needed
-        self._f_cache: Dict[str, Any] = {}
+    def _get_proc(self, name: str) -> Optional[ctypes._CFuncPtr]:
+        try:
+            return getattr(self.lib, name)
+        except AttributeError:
+            return None
 
     def _resolve(self, base_names: List[str]) -> Tuple[Callable, bool]:
-        # Try prefix/suffix combos and A/W variants
+        """Resolve a function. Returns (callable, is_wide). Tries many patterns and export scan."""
         last_err = None
+        # 1) Try direct prefix/suffix combos first
         for base in base_names:
             for pref in NATIVE_NAME_PREFIXES:
                 for suff in NATIVE_SUFFIXES:
                     name = f"{pref}{base}{suff}"
-                    try:
-                        fn = getattr(self.lib, name)
+                    fn = self._get_proc(name)
+                    if fn:
                         wide = suff == "W"
+                        debug(f"Resolved '{base}' -> {name} (wide={wide})")
                         return fn, wide
-                    except AttributeError as e:
-                        last_err = e
-                        continue
-        raise AttributeError(f"Function not found for candidates: {base_names}; last={last_err}")
+        # 2) Scan export table for something similar
+        if self._exports.names:
+            match = self._exports.find_like(base_names)
+            if match:
+                fn = self._get_proc(match)
+                if fn:
+                    wide = match.endswith('W')
+                    debug(f"Resolved by exports: '{base_names}' -> {match} (wide={wide})")
+                    return fn, wide
+        # 3) Try stdcall-decorated variants like _FunctionName@N
+        for base in base_names:
+            for n in (8, 12, 16, 20, 24, 28, 32):
+                decorated = f"_{base}@{n}"
+                fn = self._get_proc(decorated)
+                if fn:
+                    debug(f"Resolved stdcall-decorated '{base}' -> {decorated}")
+                    return fn, False
+        raise AttributeError(f"Function not found for candidates: {base_names}")
 
     def connect(self, host: str, port: int, timeout_ms: int = 10000) -> None:
         fn, wide = self._resolve(CANDIDATES_CONNECT)
-        # Common signatures we try to support:
-        # int Connect(const char* host, uint16_t port, int timeoutMs)
-        # int Connect(const wchar_t* host, uint16_t port, int timeoutMs)
+        # We try several common signatures conservatively.
         fn.restype = ctypes.c_int
-        fn.argtypes = [ctypes.c_wchar_p if wide else ctypes.c_char_p, ctypes.c_uint16, ctypes.c_int]
-        rc = fn(host if wide else host.encode("utf-8"), port, timeout_ms)
-        if rc != 0:
+        if wide:
+            try:
+                fn.argtypes = [ctypes.c_wchar_p, ctypes.c_uint16, ctypes.c_int]
+                rc = fn(host, port, timeout_ms)
+            except Exception:
+                fn.argtypes = [ctypes.c_wchar_p, ctypes.c_uint16]
+                rc = fn(host, port)
+        else:
+            try:
+                fn.argtypes = [ctypes.c_char_p, ctypes.c_uint16, ctypes.c_int]
+                rc = fn(host.encode('utf-8'), port, timeout_ms)
+            except Exception:
+                fn.argtypes = [ctypes.c_char_p, ctypes.c_uint16]
+                rc = fn(host.encode('utf-8'), port)
+        # Some APIs return 0 on success; some return positive handle. Treat negative as error.
+        if isinstance(rc, int) and rc < 0:
             raise RuntimeError(f"Connect failed, rc={rc}")
 
     def login(self, fiscal_password: str, cashier_id: int, pin: str, department: int = DEPARTMENT) -> None:
         fn, wide = self._resolve(CANDIDATES_LOGIN)
-        # Common signatures we try to support (any one):
-        # int Login(int cashier, const char* pin, const char* password)
-        # int Login(const char* password, int cashier, const char* pin)
-        # int Login(int department, int cashier, const char* pin, const char* password)
-        # We'll attempt to call with 3 then 4 args.
         str_t = ctypes.c_wchar_p if wide else ctypes.c_char_p
-
-        # attempt 1: (cashier, pin, password)
-        try:
-            fn.restype = ctypes.c_int
-            fn.argtypes = [ctypes.c_int, str_t, str_t]
-            rc = fn(cashier_id, pin if wide else pin.encode("utf-8"), fiscal_password if wide else fiscal_password.encode("utf-8"))
-            if rc != 0:
-                raise RuntimeError(f"Login failed (cashier,pin,pwd), rc={rc}")
-            return
-        except Exception:
-            pass
-
-        # attempt 2: (password, cashier, pin)
-        try:
-            fn.restype = ctypes.c_int
-            fn.argtypes = [str_t, ctypes.c_int, str_t]
-            rc = fn(fiscal_password if wide else fiscal_password.encode("utf-8"), cashier_id, pin if wide else pin.encode("utf-8"))
-            if rc != 0:
-                raise RuntimeError(f"Login failed (pwd,cashier,pin), rc={rc}")
-            return
-        except Exception:
-            pass
-
-        # attempt 3: (department, cashier, pin, password)
-        fn.restype = ctypes.c_int
-        fn.argtypes = [ctypes.c_int, ctypes.c_int, str_t, str_t]
-        rc = fn(department, cashier_id, pin if wide else pin.encode("utf-8"), fiscal_password if wide else fiscal_password.encode("utf-8"))
-        if rc != 0:
-            raise RuntimeError(f"Login failed (dept,cashier,pin,pwd), rc={rc}")
+        # Try several known shapes in order
+        trials = [
+            ([ctypes.c_int, str_t, str_t], (cashier_id, pin, fiscal_password)),
+            ([str_t, ctypes.c_int, str_t], (fiscal_password, cashier_id, pin)),
+            ([ctypes.c_int, ctypes.c_int, str_t, str_t], (department, cashier_id, pin, fiscal_password)),
+        ]
+        last_rc = None
+        for argtypes, args in trials:
+            try:
+                fn.restype = ctypes.c_int
+                fn.argtypes = argtypes
+                call_args = []
+                for a, t in zip(args, argtypes):
+                    if t == str_t:
+                        call_args.append(a if wide else a.encode('utf-8'))
+                    else:
+                        call_args.append(a)
+                rc = fn(*call_args)
+                last_rc = rc
+                if not isinstance(rc, int) or rc >= 0:
+                    return
+            except Exception:
+                continue
+        raise RuntimeError(f"Login failed, rc={last_rc}")
 
     def get_departments(self) -> Any:
         fn, wide = self._resolve(CANDIDATES_DEPARTMENTS)
-        # Assume: int GetDepartments(char* outJson, int outLen)
         out_len = 64 * 1024
         buf = ctypes.create_unicode_buffer(out_len) if wide else ctypes.create_string_buffer(out_len)
         fn.restype = ctypes.c_int
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        rc = fn(buf, out_len)
-        if rc != 0:
+        try:
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            rc = fn(buf, out_len)
+        except Exception:
+            # Some APIs: returns pointer to string; no args
+            fn.argtypes = []
+            fn.restype = ctypes.c_wchar_p if wide else ctypes.c_char_p
+            s = fn()
+            if s is None:
+                return None
+            return _maybe_json(s if wide else s.decode('utf-8', 'ignore'))
+        if rc < 0:
             raise RuntimeError(f"GetDepartments failed, rc={rc}")
-        raw = buf.value if wide else buf.value.decode("utf-8", "ignore")
+        raw = buf.value if wide else buf.value.decode('utf-8', 'ignore')
         return _maybe_json(raw)
 
     def get_device_info(self) -> Any:
@@ -356,11 +435,19 @@ class NativeBackend:
         out_len = 64 * 1024
         buf = ctypes.create_unicode_buffer(out_len) if wide else ctypes.create_string_buffer(out_len)
         fn.restype = ctypes.c_int
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        rc = fn(buf, out_len)
-        if rc != 0:
+        try:
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            rc = fn(buf, out_len)
+        except Exception:
+            fn.argtypes = []
+            fn.restype = ctypes.c_wchar_p if wide else ctypes.c_char_p
+            s = fn()
+            if s is None:
+                return None
+            return _maybe_json(s if wide else s.decode('utf-8', 'ignore'))
+        if rc < 0:
             raise RuntimeError(f"GetDeviceInfo failed, rc={rc}")
-        raw = buf.value if wide else buf.value.decode("utf-8", "ignore")
+        raw = buf.value if wide else buf.value.decode('utf-8', 'ignore')
         return _maybe_json(raw)
 
     def disconnect(self) -> None:
@@ -368,12 +455,10 @@ class NativeBackend:
             fn, _ = self._resolve(CANDIDATES_DISCONNECT)
         except Exception:
             return
-        fn.restype = None
         try:
             fn()
         except Exception:
             pass
-
 
 def _maybe_json(s: str) -> Any:
     s = (s or "").strip()
