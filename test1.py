@@ -1,8 +1,8 @@
-# hdm_departments_com.py
-# Minimal COM-based caller for HDMPrint.tlb/HDMPrint.dll to fetch Departments
+# Requires: pip install comtypes
+# Place next to: hdm/HDMPrint.tlb (+ HDMPrint.dll registered or loadable)
 
-import os, sys, json, re
-from typing import Any, List, Tuple, Optional
+import os, sys, json
+from typing import Any, List, Tuple
 
 HOST = "123.123.123.14"
 PORT = 8123
@@ -11,82 +11,42 @@ CASHIER_ID = 3
 CASHIER_PIN = "4321"
 DEPARTMENT = 1
 
-BASE_DIR = os.path.dirname(__file__)
-TLB_PATH = os.path.join(BASE_DIR, "hdm", "HDMPrint.tlb")
-DLL_PATH = os.path.join(BASE_DIR, "hdm", "HDMPrint.dll")  # optional (registration)
+BASE = os.path.dirname(__file__)
+TLB_PATH = os.path.join(BASE, "hdm", "HDMPrint.tlb")
 
-# Candidate names we try to match on the COM object (case-insensitive)
-CANDIDATES_CONNECT = ["ConnectTCP", "Connect", "OpenTCP", "Open", "Init", "Initialize", "Start", "InitializeDevice"]
-CANDIDATES_LOGIN   = ["LoginEx", "Login", "CashierLogin", "OperatorLogin", "Authorize", "Auth"]
-CANDIDATES_DEPS    = ["GetDepartmentsJSON", "GetDepartmentList", "GetDepartments", "Departments"]
+FR_CLSID = "{C0D2BCF7-4877-4645-BD08-3F0D88E7C712}"  # from your log
 
-PREFIXES = ["", "HDM_", "Hdm_", "FR_", "Fr_"]
+def debug(*a): print("[HDM]", *a)
 
-def debug(msg: str): print(f"[HDM] {msg}")
-
-def pretty(obj: Any) -> str:
-    try: return json.dumps(obj, ensure_ascii=False, indent=2)
-    except Exception: return str(obj)
-
-def load_type_library() -> Any:
+def load_tlb():
     from comtypes.client import GetModule
     if not os.path.exists(TLB_PATH):
-        raise FileNotFoundError(f"Type library not found: {TLB_PATH}")
-    mod = GetModule(TLB_PATH)  # generates comtypes.gen.<something>
-    debug(f"Loaded TLB: {TLB_PATH}")
-    return mod
+        raise FileNotFoundError(f"Type library not found at {TLB_PATH}")
+    return GetModule(TLB_PATH)
 
-def iter_coclasses(mod) -> List[Tuple[str, str]]:
-    """
-    Return [(name, clsid_str), ...] for all CoClasses in the type library.
-    """
-    import comtypes.gen
-    py_mod = sys.modules[mod.__name__]  # generated python module
-    result = []
-    for name in dir(py_mod):
-        obj = getattr(py_mod, name)
-        if hasattr(obj, "_reg_clsid_"):
-            try:
-                clsid = obj._reg_clsid_
-                result.append((name, str(clsid)))
-            except Exception:
-                pass
-    return result
-
-def create_com_object(clsid: str):
+def create_fr():
     from comtypes.client import CreateObject
-    # Use CLSID directly; avoids needing ProgID
-    return CreateObject(clsid)
+    return CreateObject(FR_CLSID)  # instantiate FR CoClass
 
-def list_methods(obj) -> List[str]:
-    # comtypes IDispatch exposes methods as attributes; filter dunders/props
-    names = []
-    for n in dir(obj):
-        if n.startswith("_"):
+def list_members(obj):
+    methods, props = [], []
+    for name in dir(obj):
+        if name.startswith("_"): 
             continue
         try:
-            attr = getattr(obj, n)
-            if callable(attr):
-                names.append(n)
+            attr = getattr(obj, name)
+            (methods if callable(attr) else props).append(name)
         except Exception:
             continue
-    return sorted(names, key=str.lower)
+    return sorted(methods, key=str.lower), sorted(props, key=str.lower)
 
-def resolve_method(obj, candidates: List[str]) -> Optional[str]:
-    methods = list_methods(obj)
-    low = [m.lower() for m in methods]
-    # exact matches (with common prefixes)
-    for base in candidates:
-        for pref in PREFIXES:
-            want = (pref + base).lower()
-            if want in low:
-                return methods[low.index(want)]
-    # contains matches
-    for base in candidates:
-        for i, m in enumerate(low):
-            if base.lower() in m:
-                return methods[i]
-    return None
+def set_if_exists(obj, name, value):
+    if hasattr(obj, name):
+        try:
+            setattr(obj, name, value)
+            debug(f"set {name} = {value!r}")
+        except Exception as e:
+            debug(f"couldn't set {name}: {e}")
 
 def try_call(fn, argsets: List[tuple]):
     last = None
@@ -96,106 +56,81 @@ def try_call(fn, argsets: List[tuple]):
         except Exception as e:
             last = e
             continue
-    raise RuntimeError(f"Call failed for all signatures. Last={last}")
+    raise RuntimeError(f"{fn.__name__} failed for all tried signatures. Last={last}")
+
+def maybe_json(s: Any):
+    if s is None: 
+        return None
+    if isinstance(s, (bytes, bytearray)):
+        s = s.decode("utf-8", "ignore")
+    if isinstance(s, str):
+        t = s.strip()
+        if (t.startswith("{") and t.endswith("}")) or (t.startswith("[") and t.endswith("]")):
+            try: 
+                return json.loads(t)
+            except Exception:
+                return s
+    return s
 
 def main():
-    # 1) Load type library and find coclasses
-    mod = load_type_library()
-    coclasses = iter_coclasses(mod)
-    if not coclasses:
-        raise SystemExit("No CoClasses found in TLB. Is the TLB correct?")
+    if os.name != "nt":
+        raise SystemExit("Windows only (COM).")
 
-    debug(f"Found {len(coclasses)} CoClass(es): " + ", ".join(f"{n}={c}" for n, c in coclasses))
-    last_err = None
+    load_tlb()
+    fr = create_fr()
 
-    for name, clsid in coclasses:
-        debug(f"Trying CoClass {name} ({clsid}) …")
-        try:
-            obj = create_com_object(clsid)
-        except Exception as e:
-            last_err = e
-            debug(f"  CreateObject failed: {e}")
-            continue
+    methods, props = list_members(fr)
+    debug("FR methods:", ", ".join(methods) or "(none)")
+    debug("FR props  :", ", ".join(props) or "(none)")
 
-        methods = list_methods(obj)
-        debug(f"  Methods: {', '.join(methods) or '(none)'}")
+    # Many drivers expose connection fields as properties
+    for cand, val in [
+        ("Host", HOST), ("IP", HOST), ("Address", HOST), ("Server", HOST),
+        ("Port", int(PORT)), ("Password", FISCAL_PASSWORD), ("Pass", FISCAL_PASSWORD),
+        ("Cashier", int(CASHIER_ID)), ("Operator", int(CASHIER_ID)),
+        ("Pin", str(CASHIER_PIN)), ("PIN", str(CASHIER_PIN)),
+        ("Department", int(DEPARTMENT)), ("Dept", int(DEPARTMENT))
+    ]:
+        set_if_exists(fr, cand, val)
 
-        # 2) Resolve connect/init
-        m_connect = resolve_method(obj, CANDIDATES_CONNECT)
-        if not m_connect:
-            debug("  No connect/initialize-like method. Trying next CoClass …")
-            continue
-        debug(f"  Using connect method: {m_connect}")
+    # 1) Connectivity check if available
+    if hasattr(fr, "ConnectionCheck"):
+        debug("Calling ConnectionCheck …")
+        rc = try_call(fr.ConnectionCheck, [
+            (HOST, int(PORT), FISCAL_PASSWORD),   # common
+            (HOST, int(PORT)),                    # sometimes no password
+        ])
+        debug("ConnectionCheck result:", rc)
 
-        # 3) Resolve login (optional)
-        m_login = resolve_method(obj, CANDIDATES_LOGIN)
-        if m_login:
-            debug(f"  Using login method: {m_login}")
-        else:
-            debug("  No login-like method found (may not be required).")
+    # 2) Fetch operators+departments (vendors often return both here)
+    if not hasattr(fr, "GetOperators"):
+        raise SystemExit("FR.GetOperators not found on COM object — cannot proceed.")
 
-        # 4) Resolve departments
-        m_deps = resolve_method(obj, CANDIDATES_DEPS)
-        if not m_deps:
-            debug("  No departments-like method found. Trying next CoClass …")
-            continue
-        debug(f"  Using departments method: {m_deps}")
+    debug("Calling GetOperators …")
+    res = try_call(fr.GetOperators, [
+        (FISCAL_PASSWORD,),                                  # spec-like: password only
+        (HOST, int(PORT), FISCAL_PASSWORD),                  # some drivers require host/port
+        (FISCAL_PASSWORD, int(CASHIER_ID), str(CASHIER_PIN)) # if auth baked in
+    ])
+    data = maybe_json(res)
 
-        # 5) Connect
-        try:
-            fn = getattr(obj, m_connect)
-            # common signatures: (host, port, timeout) or (host, port)
-            try_call(fn, [
-                (HOST, int(PORT), 10000),
-                (HOST, int(PORT)),
-            ])
-            debug("  Connected.")
-        except Exception as e:
-            last_err = e
-            debug(f"  Connect failed: {e}")
-            continue
+    print("\n=== Raw GetOperators result ===")
+    if isinstance(data, (dict, list)):
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    else:
+        print(res)
 
-        # 6) Login (optional)
-        if m_login:
-            try:
-                fn = getattr(obj, m_login)
-                # try common orders:
-                try_call(fn, [
-                    (int(CASHIER_ID), str(CASHIER_PIN), str(FISCAL_PASSWORD)),
-                    (str(FISCAL_PASSWORD), int(CASHIER_ID), str(CASHIER_PIN)),
-                    (int(DEPARTMENT), int(CASHIER_ID), str(CASHIER_PIN), str(FISCAL_PASSWORD)),
-                ])
-                debug("  Login OK.")
-            except Exception as e:
-                debug(f"  Login failed (continuing anyway): {e}")
-
-        # 7) Get Departments
-        try:
-            fn = getattr(obj, m_deps)
-            # Most COM drivers return a JSON/text string and take no args
-            try:
-                res = fn()
-            except TypeError:
-                # Rare buffer form (discouraged in COM) – try (outLen) or (None)
-                res = fn(65536)
-            if isinstance(res, (bytes, bytearray)):
-                res = res.decode("utf-8", "ignore")
-            # pretty print
-            print("\n=== Departments (raw) ===")
-            try:
-                print(pretty(json.loads(res)))
-            except Exception:
-                print(res)
-            return
-        except Exception as e:
-            last_err = e
-            debug(f"  GetDepartments failed: {e}")
-            continue
-
-    # If we reached here, none of the CoClasses worked end-to-end
-    raise SystemExit(f"Could not fetch departments via COM. Last error: {last_err}")
+    # 3) Try to extract departments commonly under keys: "d", "departments"
+    deps = None
+    if isinstance(data, dict):
+        deps = data.get("d") or data.get("departments") or data.get("Departments")
+    if deps:
+        print("\n=== Departments ===")
+        for d in deps:
+            did = d.get("id") or d.get("ID")
+            name = d.get("name") or d.get("Name")
+            dtype = d.get("type") or d.get("Type")
+            print(f"ID={did}  Name={name}  Type={dtype}")
 
 if __name__ == "__main__":
-    if os.name != "nt":
-        raise SystemExit("This COM approach requires Windows.")
     main()
