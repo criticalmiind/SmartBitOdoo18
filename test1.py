@@ -1,165 +1,111 @@
-import os
-import ctypes
-from ctypes import wintypes
+import socket, json, hashlib, base64, time
+from Crypto.Cipher import DES3
+from Crypto.Util.Padding import pad, unpad
 
-# ---- Your device config (edit if needed) ----
 HOST = "123.123.123.14"
 PORT = 8123
-FISCAL_PASSWORD = "krLGfzRh"
-DEPARTMENT = 1          # used by some login variants
-CASHIER_ID = 3
-CASHIER_PIN = "4321"
-DLL_PATH = os.path.join(os.path.dirname(__file__), "hdm", "HDMPrint.dll")
+PASSWORD = "krLGfzRh"
 
-# ---- Likely export names (adjust if DLL uses different names) ----
-CONNECT_NAMES = ["HDM_Initialize", "HDM_Connect", "HDM_ConnectTCP", "Initialize", "Connect", "ConnectTCP"]
-LOGIN_NAMES = ["HDM_LoginEx", "HDM_Login", "LoginEx", "Login", "HDM_CashierLogin"]
-DEPS_NAMES  = ["HDM_GetDepartmentsJSON", "HDM_GetDepartmentList", "HDM_GetDepartments",
-               "GetDepartmentsJSON", "GetDepartmentList", "GetDepartments"]
+HDM_MAGIC = bytes.fromhex("D5 80 D4 B4 D5 84 00")  # "HDM" magic
+PROTO_TRY = (0x05, 0x00)                            # devices vary
+FCODE_TRY = (0x01, 0x21)                            # observed variants for ops+deps
+LEN_ENDIAN_TRY = ("big", "little")                 # request length field varies by model
 
-# Try wide (W) first, then ANSI (A), then unsuffixed
-SUFFIXES = ["W", "A", ""]
+def key1(pw: str) -> bytes:
+    # first 24 bytes of sha256(password) with 3DES parity
+    digest = hashlib.sha256(pw.encode("utf-8")).digest()[:24]
+    # adjust parity manually (simple mask; many devices accept raw 24 bytes too)
+    def adj(b: int) -> int:
+        # set odd parity on each byte
+        return (b & 0xFE) | (bin(b & 0xFE).count("1") % 2 == 0)
+    return bytes(int(adj(x)) for x in digest)
 
-def _load_dll(path: str):
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"HDM DLL not found at: {path}")
-    try:
-        return ctypes.WinDLL(path)
-    except Exception:
-        return ctypes.CDLL(path)
+def enc_first_key(obj: dict) -> bytes:
+    data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    c = DES3.new(key1(PASSWORD), DES3.MODE_ECB)
+    return c.encrypt(pad(data, 8))
 
-def _resolve(lib, base_names):
-    """Return (callable, is_wide) for the first symbol that exists, trying W/A/unsuffixed."""
-    tried = []
-    for base in base_names:
-        for suf in SUFFIXES:
-            name = f"{base}{suf}"
-            try:
-                fn = getattr(lib, name)
-                return fn, (suf == "W")
-            except AttributeError:
-                tried.append(name)
-                continue
-    raise AttributeError("None of these functions were found in HDMPrint.dll: " + ", ".join(tried))
+def dec_first_key(enc: bytes) -> dict:
+    if not enc:
+        return {}
+    c = DES3.new(key1(PASSWORD), DES3.MODE_ECB)
+    plain = unpad(c.decrypt(enc), 8)
+    return json.loads(plain.decode("utf-8"))
 
-def connect(lib):
-    fn, wide = _resolve(lib, CONNECT_NAMES)
-    fn.restype = ctypes.c_int
-    # Prefer signatures: (wchar*, uint16, int) or (wchar*, uint16)
-    if wide:
-        for sig in ([wintypes.LPCWSTR, ctypes.c_uint16, ctypes.c_int],
-                    [wintypes.LPCWSTR, ctypes.c_uint16]):
-            try:
-                fn.argtypes = sig
-                args = [HOST, PORT] + ([10000] if len(sig) == 3 else [])
-                rc = fn(*args)
-                if isinstance(rc, int) and rc < 0:
-                    continue
-                return
-            except Exception:
-                continue
-    else:
-        host_b = HOST.encode("utf-8")
-        for sig in ([ctypes.c_char_p, ctypes.c_uint16, ctypes.c_int],
-                    [ctypes.c_char_p, ctypes.c_uint16]):
-            try:
-                fn.argtypes = sig
-                args = [host_b, PORT] + ([10000] if len(sig) == 3 else [])
-                rc = fn(*args)
-                if isinstance(rc, int) and rc < 0:
-                    continue
-                return
-            except Exception:
-                continue
-    raise RuntimeError("Connect failed for all tried signatures")
+def recvn(s: socket.socket, n: int) -> bytes:
+    buf = b""
+    while len(buf) < n:
+        chunk = s.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("socket closed")
+        buf += chunk
+    return buf
 
-def login_if_needed(lib):
-    """Some DLLs require login; others let you read departments with just the fiscal password.
-       We try a few common signatures; if all fail, we just skip login (not fatal)."""
-    try:
-        fn, wide = _resolve(lib, LOGIN_NAMES)
-    except AttributeError:
-        # No login export — many DLLs don’t require it for departments.
-        return
+def try_once(proto: int, fcode: int, len_endian: str) -> dict:
+    body = enc_first_key({"password": PASSWORD})  # per spec, this call needs only password
+    header = bytearray()
+    header += HDM_MAGIC
+    header.append(proto & 0xFF)
+    header.append(fcode & 0xFF)
+    header += len(body).to_bytes(2, len_endian)
+    header.append(0x00)
 
-    fn.restype = ctypes.c_int
-    str_t = wintypes.LPCWSTR if wide else ctypes.c_char_p
+    frame = bytes(header) + body
 
-    trials = [
-        # (cashier, pin, password)
-        ([ctypes.c_int, str_t, str_t], (CASHIER_ID, CASHIER_PIN, FISCAL_PASSWORD)),
-        # (password, cashier, pin)
-        ([str_t, ctypes.c_int, str_t], (FISCAL_PASSWORD, CASHIER_ID, CASHIER_PIN)),
-        # (department, cashier, pin, password)
-        ([ctypes.c_int, ctypes.c_int, str_t, str_t], (DEPARTMENT, CASHIER_ID, CASHIER_PIN, FISCAL_PASSWORD)),
-    ]
+    with socket.create_connection((HOST, PORT), timeout=10.0) as s:
+        s.sendall(frame)
 
-    for argtypes, args in trials:
+        # response header is usually 10 bytes, sometimes 11 (extra reserved)
+        hdr = recvn(s, 10)
+        s.settimeout(0.05)
         try:
-            fn.argtypes = argtypes
-            call_args = []
-            for a, t in zip(args, argtypes):
-                if t == str_t and not wide:
-                    call_args.append(a.encode("utf-8"))
-                else:
-                    call_args.append(a)
-            rc = fn(*call_args)
-            if not isinstance(rc, int) or rc >= 0:
-                return
+            extra = s.recv(1)
+            if extra:
+                hdr += extra
+        except socket.timeout:
+            pass
+        finally:
+            s.settimeout(10.0)
+
+        # Parse: many units put code at [6:8] little-endian and bodyLen at [8:10] big-endian.
+        # Some show code==0 for success. Accept both styles.
+        code_le = int.from_bytes(hdr[6:8], "little") if len(hdr) >= 8 else 0
+        blen = int.from_bytes(hdr[8:10], "big") if len(hdr) >= 10 else 0
+
+        enc_body = recvn(s, blen) if blen else b""
+
+    # allow 0 or 200 as success (both observed in docs/devices)
+    if code_le not in (0, 200):
+        # try to decrypt anyway to expose any error JSON
+        try:
+            err = dec_first_key(enc_body)
         except Exception:
-            continue
-    # If login fails everywhere, we proceed anyway — departments may still work without it.
+            err = {"raw": enc_body.hex().upper()}
+        raise RuntimeError(f"HDM responded code={code_le}, body={err}")
 
-def get_departments(lib):
-    fn, wide = _resolve(lib, DEPS_NAMES)
-
-    # Two common patterns:
-    # 1) int GetDepartments*(wchar*/char* outBuf, int outLen)   -> rc==0 success
-    # 2) const wchar_t*/char* GetDepartments*()                 -> returns pointer
-    # We try buffer style first, then no-arg return-pointer style.
-
-    # Try buffer
-    try:
-        fn.restype = ctypes.c_int
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        out_len = 64 * 1024
-        buf = ctypes.create_unicode_buffer(out_len) if wide else ctypes.create_string_buffer(out_len)
-        rc = fn(buf, out_len)
-        if isinstance(rc, int) and rc >= 0:
-            return buf.value if wide else buf.value.decode("utf-8", "ignore")
-    except Exception:
-        pass
-
-    # Try return-pointer
-    try:
-        fn.argtypes = []
-        fn.restype = ctypes.c_wchar_p if wide else ctypes.c_char_p
-        s = fn()
-        if s:
-            return s if wide else s.decode("utf-8", "ignore")
-    except Exception:
-        pass
-
-    raise RuntimeError("GetDepartments call failed (both buffer and pointer forms).")
+    return dec_first_key(enc_body)
 
 def main():
-    if os.name != "nt":
-        raise SystemExit("This script requires Windows.")
-    lib = _load_dll(DLL_PATH)
-    print("[HDM] DLL loaded:", DLL_PATH)
-
-    print(f"[HDM] Connecting to {HOST}:{PORT} …")
-    connect(lib)
-    print("[HDM] Connected.")
-
-    print("[HDM] Trying login (optional) …")
-    login_if_needed(lib)
-    print("[HDM] Login step done (or skipped).")
-
-    print("[HDM] Fetching departments …")
-    deps = get_departments(lib)
-    print("\n=== Departments (raw) ===")
-    print(deps)
+    last_err = None
+    for proto in PROTO_TRY:
+        for fcode in FCODE_TRY:
+            for le in LEN_ENDIAN_TRY:
+                try:
+                    resp = try_once(proto, fcode, le)
+                    # Expected shape: {"c":[{...operators...}], "d":[{id,name,type}, ...]}
+                    dlist = resp.get("d") or resp.get("list", {}).get("d")
+                    print("\n=== Departments ===")
+                    if dlist:
+                        for d in dlist:
+                            print(f"ID={d.get('id')}  Name={d.get('name')}  Type={d.get('type')}")
+                    else:
+                        print(json.dumps(resp, ensure_ascii=False, indent=2))
+                    return
+                except Exception as e:
+                    last_err = e
+                    time.sleep(0.1)
+                    continue
+    raise SystemExit(f"All attempts failed. Last error: {last_err}")
 
 if __name__ == "__main__":
     main()
