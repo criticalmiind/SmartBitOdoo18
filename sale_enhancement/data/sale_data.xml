@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+    
+    <!-- Resource: sale.shop -->
+        <record id="sale_shop_1" model="sale.shop">
+            <field name="company_id" ref="base.main_company"/>
+            <field name="payment_default_id" ref="account.account_payment_term_30days"/>
+            <field name="pricelist_id" ref="product.list0"/>
+            <field name="warehouse_id" ref="stock.warehouse0"/>
+            <field model="res.company" name="name" search="[]" use="name"/>
+        </record>
+    </data>
+</odoo>

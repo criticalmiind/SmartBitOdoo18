@@ -1,0 +1,60 @@
+<odoo>
+  <data>
+    <record id="view_hotel_reservation_search" model="ir.ui.view">
+            <field name="name">hotel.reservation.search</field>
+            <field name="model">hotel.reservation</field>
+            <field name="arch" type="xml">
+                <search>
+                    <group expand="1" string="Group By">
+                    <filter string="Room Number" name="room_no" context="{'group_by':'room_no'}"/>
+                    </group>
+                </search>
+            </field>
+        </record>
+    <record id="view_hotel_calendar" model="ir.ui.view">
+        <field name="name">hotel.calendar.view</field>
+        <field name="model">hotel.reservation</field>
+        <field name="arch" type="xml">
+            <calendar string="Hotel Calendar" date_start="checkin" date_stop="checkout" color="room_no" event_open_popup="true" mode="month" quick_create="0">
+                <field name="reservation_no"/>
+                <field name="room_type" filters="1"/>
+                <field name="checkin"/>   
+                <field name="checkout"/>               
+                <field name="room_no" widget="many2manyattendeeexpandable"/>
+                <field name="status" filters="1"/>
+                <field name="partner_id" filters="1"/>
+            </calendar>
+        </field>
+    </record>
+
+    <record id="view_hotel_inherit_reservation_form" model="ir.ui.view">
+            <field name="name">hotel.inherit.reservation</field>
+            <field name="model">hotel.reservation</field>
+            <field name="inherit_id" ref="hotel_management.view_hotel_reservation_form1"/>
+            <field name="arch" type="xml">
+                <xpath expr="//field[@name='source']" position="after">
+                    <field name="checkin" invisible="1"/>
+                    <field name="checkout" invisible="1"/>
+                    <field name="room_type" invisible="1"/>
+                    <field name="room_no" invisible="1"/>
+                    <field name="status" invisible="1"/>
+                </xpath>
+            </field>
+        </record>
+
+
+    <record model="ir.actions.act_window" id="hotel_action_window">
+      <field name="name">Hotel Dashboard</field>
+      <field name="res_model">hotel.reservation</field>
+      <field name="view_mode">calendar</field>
+    </record>
+     
+    <!-- Top menu item -->
+
+    <menuitem name="Hotel Dashboard" id="hotel_dashboard.menu_root"/>
+
+    <menuitem name="Hotel dashboard" id="hotel_dashboard.menu" parent="hotel_dashboard.menu_root"
+              action="hotel_dashboard.hotel_action_window"/>
+
+  </data>
+</odoo>

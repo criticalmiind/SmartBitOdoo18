@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<templates id="template" xml:space="preserve">
+   <t t-name="hotel_dashboard.CalendarController" t-inherit="web.CalendarController" t-inherit-mode="extension">
+      <xpath expr="//div[hasclass('o_calendar_container')]" position="before">
+         <div class='row' t-if="env.searchModel.resModel == 'hotel.reservation'">
+            <div class="col-md-3">
+               <div class="d-inline-flex p-3 align-middle parent w-100 mb-3" style="background:#D5E4FA">
+                  <div class="p-2 child">
+                     <div class="flex_box_icon"> <i class="fa fa-times"></i></div>
+                  </div>
+                  <div class="p-2 flex-fill child">
+                     <h3> Check-in Request</h3>
+                  </div>
+                  <div class="p-2 flex-fill child">
+                     <h2 class="h1 mx-auto booking_col_h2"><t t-esc='check_in_request'></t></h2>
+                  </div>
+               </div>
+            </div>
+            <div class="col-md-3">
+               <div class="d-inline-flex p-3 align-middle parent w-100 mb-3" style="background:#4169e12e;">
+                  <div class="p-2 child">
+                     <div class="flex_box_icon"> <i class="fa fa-times"></i></div>
+                  </div>
+                  <div class="p-2 flex-fill child">
+                     <h3> Check-out Request</h3>
+                  </div>
+                  <div class="p-2 flex-fill child">
+                     <h2 class="h1 mx-auto booking_col_h2"><t t-esc='check_out_request'></t></h2>
+                  </div>
+               </div>
+            </div>
+            <div class="col-md-3">
+               <div class="d-inline-flex p-3 align-middle parent w-100 mb-3" style="background: #E5D6FB">
+                  <div class="p-2 child">
+                     <div class="flex_box_icon"> <i class="fa fa-times"></i></div>
+                  </div>
+                  <div class="p-2 flex-fill child">
+                     <h3> Total Available</h3>
+                  </div>
+                  <div class="p-2 flex-fill child">
+                     <h2 class="h1 mx-auto booking_col_h2"><t t-esc='total_available'></t></h2>
+                  </div>
+               </div>
+            </div>
+            <div class="col-md-3">
+               <div class="d-inline-flex p-3 align-middle parent w-100 mb-3" style="background: #FF00002e;">
+                  <div class="p-2 child">
+                     <div class="flex_box_icon"> <i class="fa fa-times"></i></div>
+                  </div>
+                  <div class="p-2 flex-fill child">
+                     <h3> Total Room Book</h3>
+                  </div>
+                  <div class="p-2 flex-fill child">
+                     <h2 class="h1 mx-auto booking_col_h2"><t t-esc='total_booked'></t></h2>
+                  </div>
+               </div>
+            </div>
+         </div>
+      </xpath>
+   </t>
+</templates>
